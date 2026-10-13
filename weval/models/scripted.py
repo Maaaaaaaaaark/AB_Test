@@ -20,7 +20,7 @@ from typing import Dict, Optional
 
 from .backend import GenerationBackend, GenerationResult, make_item_seed
 
-SCRIPTED_BACKEND_VERSION = "scripted-backend-v1"
+SCRIPTED_BACKEND_VERSION = "scripted-backend-v2"
 
 DEFAULT_SCRIPTED_TEXT = "NOT FOUND"  # plausible for abstention plumbing checks
 
@@ -34,10 +34,27 @@ class ScriptedBackend(GenerationBackend):
 
     name = "scripted"
 
-    def __init__(self, script_path: Optional[Path] = None, default_text: str = DEFAULT_SCRIPTED_TEXT):
+    def __init__(
+        self,
+        script_path: Optional[Path] = None,
+        default_text: str = DEFAULT_SCRIPTED_TEXT,
+        reasoning_mode: Optional[str] = None,
+    ):
         self.script_path = Path(script_path) if script_path else None
         self.default_text = default_text
+        self.reasoning_mode = reasoning_mode
         self._script: Optional[Dict[str, str]] = None
+
+    def _default_raw_text(self) -> str:
+        """Render the semantic default as raw generated model text.
+
+        A prefilled-thinking prompt ends inside an open reasoning region, so
+        its generated text must close that region before emitting the answer.
+        Explicit JSONL script entries remain raw text and are never rewritten.
+        """
+        if self.reasoning_mode == "prefilled_thinking":
+            return f"</think>\n{self.default_text}"
+        return self.default_text
 
     def _load_script(self) -> Dict[str, str]:
         if self._script is None:
@@ -61,7 +78,7 @@ class ScriptedBackend(GenerationBackend):
         deadline_seconds: float,
     ) -> GenerationResult:
         script = self._load_script()
-        text = script.get(item_id, self.default_text)
+        text = script[item_id] if item_id in script else self._default_raw_text()
         # Synthetic token ids: deterministic per (seed, item, text) but NOT a
         # real tokenization. Length capped to look plausible, unrelated to any
         # real tokenizer.
@@ -87,7 +104,11 @@ class ScriptedBackend(GenerationBackend):
             wall_seconds=0.0,
             backend=self.name,
             tokenizer_used="synthetic",
-            merged_generation_params={"backend_version": SCRIPTED_BACKEND_VERSION, "note": "synthetic dry-run"},
+            merged_generation_params={
+                "backend_version": SCRIPTED_BACKEND_VERSION,
+                "note": "synthetic dry-run",
+                "reasoning_mode": self.reasoning_mode,
+            },
         )
 
     def eos_strings(self):

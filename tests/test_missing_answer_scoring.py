@@ -9,7 +9,7 @@ The musique_local path is parse (weval/parsing/musique_answer.py) -> score
     answer attempt, "not found" plus trailing text, punctuation) is a false
     answer (0.0).
   * On a POSITIVE item NOT FOUND is a false abstention: value 0.0 with the
-    flag set, and the item is excluded from answerable-F1.
+    flag set, and the item remains in answerable-F1 with a zero score.
   * An open reasoning region at EOS (or an empty final region) parses to
     missing_final: value 0.0 on a positive, NOT an abstention, and the
     missing_final status propagates to the ScoreRecord.
@@ -105,7 +105,7 @@ class TestPositiveFalseAbstention:
         assert rec.status == "scored"
         assert rec.detail["false_abstention"] is True
         assert rec.detail["abstained"] is True
-        assert rec.detail["answerable"] is False
+        assert rec.detail["answerable"] is True
         assert rec.detail["em"] == 0
         assert rec.detail["f1"] == 0.0
 

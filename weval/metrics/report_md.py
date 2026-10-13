@@ -135,15 +135,17 @@ def render_markdown(report: ReportData) -> str:
         for config, tasks in report.compute.items():
             for task, c in tasks.items():
                 mean_s = "-" if c.get("mean") is None else f"{c['mean']:.3e}"
+                sum_s = "-" if c.get("sum") is None else f"{c['sum']:.3e}"
                 n_text_s = "null (run inspect-params)" if c.get("n_text") is None else str(c["n_text"])
                 lines.append(
-                    f"| {config} | {task} | {c.get('sum'):.3e} | {mean_s} | "
+                    f"| {config} | {task} | {sum_s} | {mean_s} | "
                     f"{n_text_s} | {_fmt(c.get('cweighted_usd'), 6)} | {_fmt(c.get('efficiency_compute'), 3)} |"
                 )
                 kinds = c.get("by_kind") or {}
                 for k, v in kinds.items():
                     kmean_s = "-" if v.get("mean") is None else f"{v['mean']:.3e}"
-                    lines.append(f"| | {task} [{k}] | {v.get('sum'):.3e} | {kmean_s} | | | |")
+                    ksum_s = "-" if v.get("sum") is None else f"{v['sum']:.3e}"
+                    lines.append(f"| | {task} [{k}] | {ksum_s} | {kmean_s} | | | |")
         lines.append("")
 
     if report.paired:

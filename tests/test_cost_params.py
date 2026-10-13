@@ -322,7 +322,7 @@ class TestAggregateCproxy:
         agg = aggregate_cproxy([{"kind": "positive", "cproxy": None}])
         assert agg["n_items"] == 1
         assert agg["n_with_cproxy"] == 0
-        assert agg["sum"] == 0.0
+        assert agg["sum"] is None
         assert agg["mean"] is None
         assert agg["by_kind"] == {}
 

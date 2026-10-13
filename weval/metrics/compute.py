@@ -75,22 +75,25 @@ def aggregate_cproxy(
 ) -> Dict[str, Any]:
     """Sum/mean of Cproxy, split by item kind when present (positive/negative
     costs are reported separately)."""
-    out: Dict[str, Any] = {"n_items": len(per_item), "sum": 0.0, "mean": None}
+    out: Dict[str, Any] = {"n_items": len(per_item), "sum": None, "mean": None}
     kinds: Dict[str, Dict[str, Any]] = {}
+    total = 0.0
+    n_valid = 0
     for it in per_item:
         c = it.get("cproxy")
         if c is None:
             continue
-        out["sum"] += c
+        total += c
+        n_valid += 1
         k = str(it.get(kind_key, "na"))
         if k not in kinds:
             kinds[k] = {"sum": 0.0, "n": 0}
         kinds[k]["sum"] += c
         kinds[k]["n"] += 1
-    if per_item:
-        n_valid = sum(1 for it in per_item if it.get("cproxy") is not None)
-        out["mean"] = out["sum"] / n_valid if n_valid else None
-        out["n_with_cproxy"] = n_valid
+    out["n_with_cproxy"] = n_valid
+    if n_valid:
+        out["sum"] = total
+        out["mean"] = total / n_valid
     for k, v in kinds.items():
         v["mean"] = v["sum"] / v["n"] if v["n"] else None
     out["by_kind"] = kinds

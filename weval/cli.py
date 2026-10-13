@@ -113,8 +113,15 @@ def _backend_factory(args: argparse.Namespace, cfg: ConfigBundle):
 
         script = Path(args.script) if args.script else None
         if args.default_text:
-            return lambda name: ScriptedBackend(script_path=script, default_text=args.default_text)
-        return lambda name: ScriptedBackend(script_path=script)
+            return lambda name: ScriptedBackend(
+                script_path=script,
+                default_text=args.default_text,
+                reasoning_mode=cfg.model(name).reasoning_mode,
+            )
+        return lambda name: ScriptedBackend(
+            script_path=script,
+            reasoning_mode=cfg.model(name).reasoning_mode,
+        )
     if args.backend == "transformers":
         from .models.transformers_backend import TransformersBackend
 

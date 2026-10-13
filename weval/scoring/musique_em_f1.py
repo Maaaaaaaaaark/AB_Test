@@ -24,7 +24,7 @@ from typing import Any, Dict, List
 from ..parsing.base import ParsedAnswer
 from .base import ScoreRecord, unscorable
 
-MUSIQUE_SCORER_VERSION = "musique-em-f1-v1"
+MUSIQUE_SCORER_VERSION = "musique-em-f1-v2"
 
 # Vendored official MuSiQue answer metric (verbatim). The vendored files
 # import each other with absolute paths (metrics.metric), so BOTH the vendor
@@ -94,7 +94,11 @@ def score_musique(item: Dict[str, Any], parsed: ParsedAnswer) -> ScoreRecord:
                 "kind": "positive",
                 "abstained": True,
                 "false_abstention": True,
-                "answerable": False,
+                # ``answerable`` describes the gold item, not the model's
+                # decision to abstain.  Keeping this True ensures that a
+                # false abstention contributes zero to answerable F1 instead
+                # of disappearing from its denominator.
+                "answerable": True,
                 "em": 0,
                 "f1": 0.0,
                 "predicted_answer": parsed.value,
