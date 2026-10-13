@@ -25,8 +25,33 @@ from huggingface_hub import snapshot_download
 
 root = Path(os.environ["WEVAL_ROOT"])
 cfg = yaml.safe_load((root / "configs" / "models.yaml").read_text(encoding="utf-8"))
+seen = {}
 for name, m in cfg["models"].items():
     dest = root / "models" / name
+    key = (m["repo"], m["revision"], m.get("tokenizer_revision"))
+    canonical = seen.get(key)
+    if canonical is not None:
+        # Multiple evaluation configurations may intentionally use the exact
+        # same checkpoint (Qwen thinking on/off differs only in template
+        # kwargs).  Store the weights once and expose the second config via a
+        # relative symlink so project relocation does not break it.
+        if dest.is_symlink():
+            if dest.resolve() != canonical.resolve():
+                raise RuntimeError(f"{dest} points to {dest.resolve()}, expected {canonical.resolve()}")
+        elif dest.exists():
+            if any(dest.iterdir()):
+                raise RuntimeError(
+                    f"refusing to replace non-empty duplicate snapshot directory {dest}; "
+                    "move it aside and rerun"
+                )
+            dest.rmdir()
+            dest.symlink_to(os.path.relpath(canonical, dest.parent), target_is_directory=True)
+        else:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.symlink_to(os.path.relpath(canonical, dest.parent), target_is_directory=True)
+        print(f"{name}: reusing identical snapshot from {canonical}")
+        continue
+    seen[key] = dest
     if (dest / "snapshot_complete").exists():
         print(f"{name}: snapshot present, skipping")
         continue
