@@ -1,0 +1,54 @@
+# ---------------------------------------------------------------------------
+# Stage sizes (editable engineering defaults) and seeds.
+# These are small engineering screens, NOT full official benchmark runs.
+# ---------------------------------------------------------------------------
+stages:
+  smoke:
+    musique_parents: 2
+    processbench_per_subset: 2
+    reference_per_dataset: 2
+  pilot:            # debug pool: MuSiQue TRAIN parents; ProcessBench held-out-from-selection groups
+    musique_parents: 10
+    processbench_per_subset: 5
+    reference_per_dataset: 10
+  selection:
+    musique_parents: 100       # from MuSiQue public DEV, first eligible parents
+    processbench_per_subset: 25
+  holdout:
+    musique_parents: 100       # from MuSiQue public DEV, next eligible parents
+    processbench_per_subset: 25
+  reference:
+    reference_per_dataset: 100  # frozen, filtered reference subset
+
+# Evaluation seeds per stage. Formal local selection/holdout: 0,1,2.
+# Smoke, pilot and descriptive whole-question references: seed 0.
+# Repeated single-response evaluations: we report every seed and the mean,
+# never best-of-N, never majority voting.
+seeds:
+  smoke: [0]
+  pilot: [0]
+  selection: [0, 1, 2]
+  holdout: [0, 1, 2]
+  reference: [0]
+
+# Seeds for the deterministic, order-independent split/selection procedures.
+# Never change these after the corresponding manifest has been used in a run.
+split_seeds:
+  musique_subquestion_choice: 20261013
+  musique_parent_order: 20261013
+  processbench_group_order: 20261013
+  reference_subset_order: 20261013
+
+# MuSiQue subquestion selection: one eligible subquestion per parent,
+# chosen with a per-parent seeded pick that excludes the first hop whenever
+# at least two eligible subquestions exist. Hop position and question format
+# distributions are recorded in the manifest and reported.
+musique_subquestion_choice:
+  avoid_first_hop_when_possible: true
+
+# ProcessBench partitioning keeps whole problem groups together and preserves
+# each subset's error/no-error ratio (approximately, by whole groups).
+processbench_partition:
+  by_problem_group: true
+  keep_variants_together: true
+  preserve_error_ratio: true

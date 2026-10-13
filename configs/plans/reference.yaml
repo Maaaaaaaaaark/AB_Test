@@ -1,0 +1,14 @@
+# Frozen whole-question reference subset: 100 questions per dataset
+# (HotpotQA distractor dev, GSM8K main test, original MATH test), seed 0.
+# Descriptive references only: they never decide worker choice and are never
+# used to tune prompts. Problems already used in local debug/selection are
+# excluded (overlap exclusions are reported).
+stage: reference
+configs: [qwen3-4b-thinking-off, qwen3-4b-thinking-on, gemma-3-4b-it, llama-3.2-3b-instruct, deepseek-r1-distill-qwen-1.5b]
+tasks: [hotpotqa, gsm8k, math]
+require_approved_negatives: false
+require_locked_templates: true
+require_locked_thresholds: false
+max_attempts_per_item: 3
+deadline_seconds: 3600
+report_incomplete_on_unresolved: true

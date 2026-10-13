@@ -1,0 +1,15 @@
+# Formal holdout plan: a separate 100 MuSiQue DEV parents and 100 ProcessBench
+# records (25 per subset), disjoint from selection groups. Seeds 0,1,2.
+# The candidate is nominated from selection BEFORE this runs; holdout results
+# may not be used to switch candidates.
+# The runner ENFORCES the nomination: it reads artifacts/reports/selection/
+# report.json and runs only the nominated configs from the list below.
+stage: holdout
+configs: [qwen3-4b-thinking-off, qwen3-4b-thinking-on, gemma-3-4b-it, llama-3.2-3b-instruct, deepseek-r1-distill-qwen-1.5b]
+tasks: [musique_local, processbench]
+require_approved_negatives: true
+require_locked_templates: true
+require_locked_thresholds: true
+max_attempts_per_item: 3
+deadline_seconds: 3600
+report_incomplete_on_unresolved: true

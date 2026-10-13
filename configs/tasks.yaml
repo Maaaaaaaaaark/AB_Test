@@ -1,0 +1,69 @@
+# ---------------------------------------------------------------------------
+# Task definitions: instructions, token budgets, scorer selection.
+# Instructions are identical for every model configuration. Only the native
+# chat template (and the declared Qwen thinking switch) differs.
+# max_new_tokens is a safety budget (reasoning + final answer together),
+# identical for all configurations within a task. It is NOT a target length.
+# ---------------------------------------------------------------------------
+task_config_version: 1
+
+musique_local:
+  adapter: musique
+  instruction_version: musique-instruction-v1
+  instruction: |
+    Answer the question below using only the provided information.
+    Give a short answer. If the provided information is insufficient to answer the question, output exactly NOT FOUND.
+  relation_note: 'In questions, an expression like "X >> relation" asks for that relation of X.'
+  answer_format: short_answer_or_not_found
+  max_new_tokens: 2048
+  scorer: musique_em_f1
+  parser: musique_answer
+
+processbench:
+  adapter: processbench
+  # Official ProcessBench critique template (vendored verbatim from
+  # QwenLM/ProcessBench @ e8024636bcabdf8bd514440551b531d3f90dd18b).
+  instruction_version: official-processbench-critique-template-v1
+  max_new_tokens: 4096
+  scorer: processbench_official
+  parser: processbench_boxed_index
+
+gsm8k:
+  adapter: gsm8k
+  instruction_version: gsm8k-instruction-v1
+  instruction: |
+    Question: {question}
+
+    Solve the problem step by step, and put your final numeric answer on a line by itself in the format #### <number>.
+    Answer:
+  max_new_tokens: 4096
+  scorer: gsm8k_official
+  parser: gsm8k_official_regex
+  relaxed_parser: gsm8k_relaxed   # secondary diagnostic only, never the primary score
+
+math:
+  adapter: math
+  instruction_version: math-instruction-v1
+  instruction: |
+    Problem:
+    {problem}
+
+    Please reason step by step, and put your final answer within \boxed{}.
+    Solution:
+  max_new_tokens: 4096
+  scorer: math_equivalence   # vendored official equivalence checker; extraction is separate
+  parser: math_boxed
+
+hotpotqa:
+  adapter: hotpotqa
+  instruction_version: hotpotqa-instruction-v1
+  instruction: |
+    Answer the following question using the information in the paragraphs below. Give a short answer.
+
+    {paragraphs}
+
+    Question: {question}
+    Answer:
+  max_new_tokens: 4096
+  scorer: hotpotqa_answer_f1  # official answer F1; supporting-facts eval not applicable (documented)
+  parser: hotpotqa_free_text

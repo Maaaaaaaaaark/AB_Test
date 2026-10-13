@@ -1,0 +1,11 @@
+# Smoke plan: two examples per task per configuration, seed 0.
+# Development only; supports no qualification claims.
+stage: smoke
+configs: [qwen3-4b-thinking-off, qwen3-4b-thinking-on, gemma-3-4b-it, llama-3.2-3b-instruct, deepseek-r1-distill-qwen-1.5b]
+tasks: [musique_local, processbench, gsm8k, math, hotpotqa]
+require_approved_negatives: false     # smoke may run development (unreviewed) pairs, clearly labeled
+require_locked_templates: false       # templates get locked on first precheck
+require_locked_thresholds: false
+max_attempts_per_item: 3              # original attempt + at most 2 infra retries
+deadline_seconds: 3600                # per-item watchdog (infra failure on timeout)
+report_incomplete_on_unresolved: true

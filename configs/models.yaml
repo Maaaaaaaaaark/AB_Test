@@ -1,0 +1,99 @@
+# ---------------------------------------------------------------------------
+# Model configurations (five configurations, four frozen models).
+# Revisions pinned from the HF API on 2026-10-13. Weights, tokenizer and chat
+# template are all pinned to these revisions. Never silently substitute a
+# model: any change requires a new configuration entry and re-fingerprinting.
+#
+# reasoning_mode:
+#   prefilled_thinking  - template ends inside an open <think> region
+#                         (model generates the closing </think> itself)
+#   optional_thinking   - model may emit <think>...</think> itself
+#   thinking_disabled   - template prefills an empty closed <think></think>
+#                         block; answer channel is the whole output
+#   no_thinking_channel - no dedicated reasoning channel; the whole output is
+#                         the answer channel (no hidden-reasoning token count
+#                         is invented for these models)
+#
+# template_sha256: sha256 of the `chat_template` string from
+# tokenizer_config.json at the pinned revision.
+#   - a hash present here must match at runtime or the run aborts;
+#   - null means "locked on first cluster precheck" (see `weval precheck`).
+# Formal stages (selection/holdout/reference) require a locked hash.
+# ---------------------------------------------------------------------------
+registry_version: 1
+pinned_at: "2026-10-13"
+models:
+  qwen3-4b-thinking-off:
+    repo: Qwen/Qwen3-4B
+    revision: 1cfa9a7208912126459214e8b04321603b3df60c
+    tokenizer_revision: 1cfa9a7208912126459214e8b04321603b3df60c
+    license: apache-2.0
+    gated: false
+    gated_note: null
+    reasoning_mode: thinking_disabled
+    template_kwargs: { enable_thinking: false }   # native Qwen3 switch, declared
+    template_file: configs/templates/qwen3-4b.jinja
+    template_sha256: a55ee1b1660128b7098723e0abcd92caa0788061051c62d51cbe87d9cf1974d8
+    context_limit_source: model_config.max_position_embeddings
+    param_exclusions: []
+
+  qwen3-4b-thinking-on:
+    repo: Qwen/Qwen3-4B
+    revision: 1cfa9a7208912126459214e8b04321603b3df60c
+    tokenizer_revision: 1cfa9a7208912126459214e8b04321603b3df60c
+    license: apache-2.0
+    gated: false
+    gated_note: null
+    reasoning_mode: optional_thinking
+    template_kwargs: { enable_thinking: true }    # explicit: model emits <think> itself
+    template_file: configs/templates/qwen3-4b.jinja
+    template_sha256: a55ee1b1660128b7098723e0abcd92caa0788061051c62d51cbe87d9cf1974d8
+    context_limit_source: model_config.max_position_embeddings
+    param_exclusions: []
+
+  gemma-3-4b-it:
+    repo: google/gemma-3-4b-it
+    revision: 093f9f388b31de276ce2de164bdc2081324b9767
+    tokenizer_revision: 093f9f388b31de276ce2de164bdc2081324b9767
+    license: gemma
+    gated: true   # requires accepted Gemma license on the HF account
+    gated_note: "HF reports gated=manual; config and template files require auth and could not be pinned locally without a token. Accept the Gemma license on huggingface.co before precheck."
+    reasoning_mode: no_thinking_channel
+    template_kwargs: {}
+    template_file: null
+    template_sha256: null              # locked at first cluster precheck
+    context_limit_source: model_config.text_config.max_position_embeddings
+    param_exclusions: ["vision_tower.*", "multi_modal_projector.*"]
+
+  llama-3.2-3b-instruct:
+    repo: meta-llama/Llama-3.2-3B-Instruct
+    revision: 0cb88a4f764b7a12671c53f0838cd831a0843b95
+    tokenizer_revision: 0cb88a4f764b7a12671c53f0838cd831a0843b95
+    license: llama3.2
+    gated: true   # requires accepted Llama 3.2 community license on the HF account
+    gated_note: "HF reports gated=manual; config and template files require auth and could not be pinned locally without a token. Accept the Llama 3.2 license on huggingface.co before precheck."
+    reasoning_mode: no_thinking_channel
+    template_kwargs: {}
+    template_file: null
+    template_sha256: null              # locked at first cluster precheck
+    context_limit_source: model_config.max_position_embeddings
+    param_exclusions: []
+
+  deepseek-r1-distill-qwen-1.5b:
+    # Exact repo deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B (MIT license).
+    # Do NOT substitute any similarly-named model.
+    repo: deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
+    revision: ad9f0ae0864d7fbcd1cd905e3c6c5b069cc8b562
+    tokenizer_revision: ad9f0ae0864d7fbcd1cd905e3c6c5b069cc8b562
+    license: mit
+    gated: false
+    gated_note: null
+    reasoning_mode: prefilled_thinking  # template ends with <think>\n
+    template_kwargs:
+      # {{bos_token}} is referenced by the template; content pinned from
+      # tokenizer_config.json at the same revision.
+      bos_token: "<｜begin▁of▁sentence｜>"
+    template_file: configs/templates/deepseek-r1-distill-qwen-1.5b.jinja
+    template_sha256: 56a1447ad31926fdc21fb07e56e5642bd9c850c4f52d8c8af7bbe5f079a84f5f
+    context_limit_source: model_config.max_position_embeddings
+    param_exclusions: []

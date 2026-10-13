@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+artifacts/
+configs/cluster.env.sh
+configs/templates/auto-locked/
+*.egg-info/
+dist/
+build/
+
+_recon/musique_v1.0.zip

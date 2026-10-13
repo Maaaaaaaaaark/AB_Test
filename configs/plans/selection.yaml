@@ -1,0 +1,15 @@
+# Formal selection plan: MuSiQue 100 DEV parents (1 subquestion each +
+# approved negative pairs), ProcessBench 100 records (25 per subset, whole
+# problem groups). Seeds 0,1,2 per item.
+# Requires: locked templates (cluster precheck), locked decision thresholds
+# (user-confirmed thresholds.yaml), approved negative review for the
+# abstention evaluation.
+stage: selection
+configs: [qwen3-4b-thinking-off, qwen3-4b-thinking-on, gemma-3-4b-it, llama-3.2-3b-instruct, deepseek-r1-distill-qwen-1.5b]
+tasks: [musique_local, processbench]
+require_approved_negatives: true
+require_locked_templates: true
+require_locked_thresholds: true
+max_attempts_per_item: 3
+deadline_seconds: 3600
+report_incomplete_on_unresolved: true

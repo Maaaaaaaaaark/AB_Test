@@ -1,0 +1,13 @@
+# Pilot/debug plan: MuSiQue 10 TRAIN parents (1 subquestion each; reviewed
+# negative pairs included when approved), ProcessBench 5 per subset (debug
+# groups only), whole-question references 10 per dataset. Seed 0.
+# Purpose: confirm operational thresholds and budgets before selection.
+stage: pilot
+configs: [qwen3-4b-thinking-off, qwen3-4b-thinking-on, gemma-3-4b-it, llama-3.2-3b-instruct, deepseek-r1-distill-qwen-1.5b]
+tasks: [musique_local, processbench, gsm8k, math, hotpotqa]
+require_approved_negatives: true      # pilot runs reviewed pairs only (per protocol)
+require_locked_templates: false
+require_locked_thresholds: false
+max_attempts_per_item: 3
+deadline_seconds: 3600
+report_incomplete_on_unresolved: true

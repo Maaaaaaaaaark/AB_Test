@@ -1,0 +1,36 @@
+# ---------------------------------------------------------------------------
+# Decision thresholds (first-version, temporary engineering qualification
+# lines). These are project-defined, NOT literature standards.
+#
+# status lifecycle:
+#   draft_unconfirmed  -> thresholds may not be used for a formal selection
+#   confirmed          -> frozen; may not be changed after selection scores
+#                         have been inspected.
+#
+# The user must confirm this file BEFORE any formal selection run.
+# Implementation, tests, smoke and pilot do not wait for this confirmation.
+# ---------------------------------------------------------------------------
+decision_config_version: 1
+status: draft_unconfirmed
+confirmed_by: null
+confirmed_at: null
+
+# Role 1: evidence worker (MuSiQue local QA with abstention)
+evidence_worker:
+  answerable_f1_min: 0.80        # mean official-answer F1 on answerable positives
+  false_abstention_max: 0.10     # max share of positives answered with NOT FOUND
+  reviewed_negative_abstention_min: 0.90  # correct-abstention rate on reviewed pairs
+  # Declared workload for the compute comparison: equal positive/negative mix.
+  # This is an assumption for cost comparison only, NOT an estimate of
+  # deployment prevalence.
+  workload: { positive_fraction: 0.5, negative_fraction: 0.5 }
+
+# Role 2: mathematical checker (ProcessBench)
+math_checker:
+  macro_f1_min: 0.60                       # equal-weight mean of the 4 subset F1s
+  macro_correct_solution_acc_min: 0.50     # mean over subsets of accuracy on label == -1
+  macro_error_solution_acc_min: 0.50       # mean over subsets of accuracy on label != -1
+
+# Tie-breaking among qualified configurations: lowest mean Ccompute_proxy on the
+# role-specific workload. The quality-cost Pareto frontier is reported alongside.
+tie_break: lowest_mean_cproxy
