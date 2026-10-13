@@ -85,6 +85,10 @@ class GenerationBackend(Protocol):
 
     name: str
 
+    def cache_identity(self) -> Dict[str, str]:
+        """Stable identity included in prediction-cache fingerprints."""
+        ...
+
     def generate(
         self,
         item_id: str,

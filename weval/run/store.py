@@ -2,7 +2,7 @@
 
 Cache key components (all present in the record, all re-validated on resume):
 model revision, chat template, rendered prompt, item content, generation
-settings, seed, parser and scorer versions. Any mismatch invalidates the
+settings (including backend name/version), seed, parser and scorer versions. Any mismatch invalidates the
 cached record and the item is regenerated (the stale record is overwritten
 atomically; the invalidation is logged, never silent).
 
@@ -86,8 +86,10 @@ class PredictionStore:
     def log(self, config: str, task: str, line: str) -> None:
         path = self.progress_log_path(config, task)
         path.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
         with open(path, "a", encoding="utf-8") as f:
-            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}\n")
+            f.write(f"{timestamp} {line}\n")
+        print(f"{timestamp} {config}/{task} {line}", flush=True)
 
     def save_status(self, config: str, task: str, seed: int, status: Dict[str, Any]) -> None:
         self.save_atomic(self.status_path(config, task, seed), status)

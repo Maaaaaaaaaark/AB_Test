@@ -34,6 +34,9 @@ class ScriptedBackend(GenerationBackend):
 
     name = "scripted"
 
+    def cache_identity(self) -> Dict[str, str]:
+        return {"name": self.name, "version": SCRIPTED_BACKEND_VERSION}
+
     def __init__(
         self,
         script_path: Optional[Path] = None,

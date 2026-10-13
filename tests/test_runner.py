@@ -226,6 +226,30 @@ def test_resume_no_resume_flag_regenerates_everything(tmp_path: Path) -> None:
     assert s2.counters.get("resume", False) is False
 
 
+def test_resume_does_not_reuse_records_from_a_different_backend(tmp_path: Path) -> None:
+    out_dir = tmp_path / "artifacts"
+    _write_musique_manifest(out_dir, [_item("p1", "P1")])
+    cfg = _runner_cfg()
+
+    first = CountingScriptedBackend()
+    run_plan(cfg, "smoke", lambda _name: first, out_dir, seeds=[0], resume=True)
+    assert first.calls == ["p1"]
+
+    class OtherBackend(CountingScriptedBackend):
+        def cache_identity(self) -> Dict[str, str]:
+            return {"name": "other", "version": "other-v1"}
+
+    second = OtherBackend()
+    run_plan(cfg, "smoke", lambda _name: second, out_dir, seeds=[0], resume=True)
+
+    # The item must be regenerated even though every data/model/prompt
+    # fingerprint is otherwise identical.
+    assert second.calls == ["p1"]
+    store = PredictionStore(out_dir / "predictions" / "smoke")
+    rec = store.load(store.record_path("m1", "musique_local", 0, "p1"))
+    assert rec["fingerprints"]["generation_settings"]
+
+
 # --------------------------------------------------------------------------
 # fingerprint invalidation
 # --------------------------------------------------------------------------

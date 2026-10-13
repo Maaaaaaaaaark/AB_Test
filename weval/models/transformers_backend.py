@@ -22,6 +22,7 @@ Details that matter for the evaluation contract:
 
 from __future__ import annotations
 
+import gc
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,6 +65,9 @@ class _ModelBundle:
 
 class TransformersBackend(GenerationBackend):
     name = "transformers"
+
+    def cache_identity(self) -> Dict[str, str]:
+        return {"name": self.name, "version": TRANSFORMERS_BACKEND_VERSION}
 
     def __init__(
         self,
@@ -257,3 +261,10 @@ class TransformersBackend(GenerationBackend):
 
     def close(self) -> None:
         self._bundle = None
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass

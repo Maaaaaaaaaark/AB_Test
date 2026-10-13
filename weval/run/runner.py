@@ -144,6 +144,16 @@ def run_plan(
         model_cfg = cfg.model(config_name)
         backend = backend_factory(config_name)
         try:
+            cache_identity_fn = getattr(backend, "cache_identity", None)
+            if callable(cache_identity_fn):
+                backend_identity = cache_identity_fn()
+            else:
+                # Compatibility for small test doubles and third-party
+                # backends.  Real backends must provide a versioned identity.
+                backend_identity = {
+                    "name": getattr(backend, "name", type(backend).__name__),
+                    "version": type(backend).__name__,
+                }
             eos_strings = getattr(backend, "eos_strings", lambda: None)()
             for task in plan.tasks:
                 task_cfg = cfg.task(task)
@@ -202,6 +212,7 @@ def run_plan(
                                 "deadline_seconds": plan.deadline_seconds,
                                 "reasoning_mode": model_cfg.reasoning_mode,
                                 "template_kwargs": model_cfg.template_kwargs,
+                                "backend": backend_identity,
                             },
                             parser_version, scorer_version,
                         )
