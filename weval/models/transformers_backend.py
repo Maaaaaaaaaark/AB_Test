@@ -32,7 +32,7 @@ from ..config import GENERATION_PARAMS, ModelCfg
 from .backend import DeadlineExceeded, GenerationBackend, GenerationResult, InfrastructureError, make_item_seed
 from .templates import RenderedTemplate, render_prompt, render_prompt_runtime
 
-TRANSFORMERS_BACKEND_VERSION = "transformers-backend-v1"
+TRANSFORMERS_BACKEND_VERSION = "transformers-backend-v2"
 
 # GenerationConfig keys that are per-item protocol overrides (dtype/quantization/
 # backend/batch_size are backend-level and recorded separately).
@@ -170,8 +170,14 @@ class TransformersBackend(GenerationBackend):
         model, tokenizer = bundle.model, bundle.tokenizer
 
         rendered = self._render(prompt_text, tokenizer)
-        input_ids = tokenizer(rendered.text, add_special_tokens=False).input_ids
-        prompt_tokens = list(input_ids)
+        encoded = tokenizer(
+            rendered.text,
+            add_special_tokens=False,
+            return_tensors="pt",
+        )
+        input_tensor = encoded["input_ids"].to(model.device)
+        attention_mask = encoded["attention_mask"].to(model.device)
+        prompt_tokens = input_tensor[0].tolist()
 
         item_seed = make_item_seed(seed, item_id)
         torch.manual_seed(item_seed)
@@ -201,7 +207,8 @@ class TransformersBackend(GenerationBackend):
         try:
             with torch.no_grad():
                 out = model.generate(
-                    input_ids=torch.tensor([input_ids], dtype=torch.long, device=model.device),
+                    input_ids=input_tensor,
+                    attention_mask=attention_mask,
                     max_new_tokens=max_new_tokens,
                     do_sample=protocol["do_sample"],
                     temperature=protocol["temperature"],
@@ -221,7 +228,7 @@ class TransformersBackend(GenerationBackend):
             raise InfrastructureError("crash", f"runtime error for {item_id}: {e}") from e
         wall = time.monotonic() - t0
 
-        generated_ids = out[0, len(input_ids) :].tolist()
+        generated_ids = out[0, input_tensor.shape[1] :].tolist()
         raw_text = tokenizer.decode(generated_ids, skip_special_tokens=False)
         finish = "length" if len(generated_ids) >= max_new_tokens else "eos"
 

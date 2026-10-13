@@ -193,10 +193,6 @@ def run_plan(
                         "infra_failed": 0, "skipped_unapproved_negatives": 0,
                         "n_tokens_in": 0, "n_tokens_out": 0, "elapsed_seconds": 0.0,
                     }
-                    existing = store.load_status(config_name, task, seed)
-                    for k, v in existing.items():
-                        if k in counters:
-                            counters[k] = v
                     t_seed_start = time.monotonic()
                     n_done_in_seed = 0
                     for item in runnable_items:

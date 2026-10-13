@@ -205,9 +205,10 @@ def test_resume_regenerates_only_the_missing_record(tmp_path: Path) -> None:
     assert rec2["status"] == "ok"
     assert rec2["item_id"] == "p2"
 
-    # The status counters survive and accumulate across the resume.
+    # Status describes this invocation, rather than accumulating stale counts
+    # from previous invocations.
     status = store.load_status("m1", "musique_local", 0)
-    assert status["completed"] == 4  # 3 first run + 1 regenerated
+    assert status["completed"] == 1
     assert status["reused"] == 2
 
 
