@@ -80,6 +80,7 @@ class TestNTextFromSafetensors:
         assert audit.n_text == 6 + 4 + 5
         assert audit.n_total_in_files == 15
         assert audit.n_excluded == 0
+        assert audit.n_excluded_tensors == 0
         assert audit.tie_word_embeddings is True
         # w1/w2/w3 are not embedding keys; the tie rule only concerns the
         # embedding / LM-head pair
@@ -137,6 +138,31 @@ class TestNTextFromSafetensors:
         assert audit.n_text == 15
         assert audit.tie_word_embeddings is False
         assert audit.tied_dedup_applied is False
+
+    def test_nested_text_config_and_prefixed_tied_weights(self, torchless_safetensors, tmp_path):
+        snap = _write_snapshot(
+            tmp_path / "snap",
+            {
+                "language_model.model.embed_tokens.weight": (2, 3),
+                "language_model.lm_head.weight": (2, 3),
+                "language_model.model.norm.weight": (3,),
+                "vision_tower.weight": (5,),
+            },
+            config={"text_config": {"tie_word_embeddings": True}},
+        )
+        audit = count_text_parameters(
+            snap, param_exclusions=["vision_tower.*"], detail=True
+        )
+        assert audit.tie_word_embeddings is True
+        assert audit.tied_dedup_applied is True
+        assert audit.tied_keys == [
+            "language_model.model.embed_tokens.weight",
+            "language_model.lm_head.weight",
+        ]
+        assert audit.n_total_in_files == 20
+        assert audit.n_excluded == 5
+        assert audit.n_excluded_tensors == 1
+        assert audit.n_text == 9
 
     def test_no_tie_info_in_config(self, torchless_safetensors, tmp_path):
         snap = _write_snapshot(
@@ -239,14 +265,19 @@ class TestNTextFromSafetensors:
             param_exclusions=["vision_tower.*", "multi_modal_projector.*"],
             detail=True,
         )
-        assert audit.n_excluded == 3
+        assert audit.n_excluded == 30
+        assert audit.n_excluded_tensors == 3
         assert sorted(audit.excluded_keys) == [
             "multi_modal_projector.linear.weight",
             "vision_tower.decoder.weight",
             "vision_tower.encoder.layer0.weight",
         ]
-        # excluded tensors never enter the text count or the file total
-        assert audit.n_total_in_files == 12  # 6 (embed) + 6 (lm_head)
+        # Excluded tensors never enter the text count, but the raw file total
+        # includes every stored tensor: 30 vision/projector + 12 text.
+        assert audit.n_total_in_files == 42
+        assert audit.per_file["model.safetensors"]["numel_total"] == 42
+        assert audit.per_file["model.safetensors"]["numel_excluded"] == 30
+        assert audit.per_file["model.safetensors"]["n_excluded_tensors"] == 3
         # tied pair (equal shapes) counts once: 6, not 12
         assert audit.n_text == 6
         assert audit.tied_dedup_applied is True

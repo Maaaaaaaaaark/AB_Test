@@ -229,7 +229,8 @@ def cmd_inspect_params(args: argparse.Namespace) -> int:
     with open(pdir / f"{args.config}.json", "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2, ensure_ascii=False)
     print(f"n_text = {audit.n_text:,}  (total in files {audit.n_total_in_files:,}, "
-          f"excluded {audit.n_excluded:,}, tied dedup {audit.tied_dedup_applied})")
+          f"excluded params {audit.n_excluded:,} across "
+          f"{audit.n_excluded_tensors:,} tensors, tied dedup {audit.tied_dedup_applied})")
     print(f"saved: {pdir / f'{args.config}.json'}")
     return 0
 
