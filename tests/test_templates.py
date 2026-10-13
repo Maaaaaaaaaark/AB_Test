@@ -99,7 +99,14 @@ class TestVendoredTemplateHashes:
         for name in ("gemma-3-4b-it", "llama-3.2-3b-instruct"):
             raw = _models()[name]
             assert raw["template_file"].startswith("configs/templates/")
-            assert raw["template_sha256"] is None
+            pinned = raw["template_sha256"]
+            # Before the first authenticated cluster precheck the hash is
+            # null and the destination may not exist.  After precheck, the
+            # hash is deliberately pinned and must match the vendored file.
+            if pinned is not None:
+                path = PROJECT_ROOT / raw["template_file"]
+                assert path.exists(), name
+                assert sha256_hex(path.read_text(encoding="utf-8")) == pinned, name
 
 
 class TestQwen3Golden:
@@ -197,7 +204,17 @@ class TestHashVerification:
         assert load_template_source(model, tmp_path) == src
 
     def test_no_vendored_template_raises_not_locked(self):
-        model = _model_cfg("gemma-3-4b-it")  # gated: template_file is null
+        # Use an explicit unlocked model rather than a real gated config:
+        # authenticated precheck legitimately transitions Gemma/Llama from
+        # unlocked to locked, and this unit test must pass in both states.
+        model = ModelCfg(
+            name="unlocked",
+            repo="r", revision="r", tokenizer_revision="r", license="l",
+            gated=True, gated_note="awaiting authenticated precheck",
+            reasoning_mode="no_thinking_channel",
+            template_file="configs/templates/unlocked.jinja",
+            template_sha256=None,
+        )
         with pytest.raises(TemplateNotLockedError):
             load_template_source(model, PROJECT_ROOT)
 
