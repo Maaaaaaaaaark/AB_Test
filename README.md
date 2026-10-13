@@ -99,6 +99,9 @@ weval review list --only proposed
 weval review approve --parent <parent_id>
 weval review exclude --parent <parent_id> --note "<reason>"
 
+# Freeze the review decisions into the manifests used by the runner.
+weval build
+
 # 6. run the test suite
 python -m pytest tests -q
 ```
@@ -114,11 +117,18 @@ weval precheck                       # token presence (boolean only), gated
                                      # access for Gemma/Llama, template locks,
                                      # torch/CUDA/bf16 -> artifacts/precheck/
 
+# The first successful precheck downloads the pinned Gemma/Llama tokenizer
+# chat templates into configs/templates/ and prints their exact sha256 values.
+# Copy those two hashes into configs/models.yaml, then rerun precheck. Formal
+# selection/holdout remains blocked until both hashes are pinned and MATCH.
+
 # 1. download model snapshots (once; the gated licenses must be accepted first)
 bash scripts/slurm/submit.sh snapshots   # snapshot_download at the pinned
                                          # revisions -> models/<config>/
 weval inspect-params --config qwen3-4b-thinking-off --snapshot-dir models/qwen3-4b-thinking-off
 # ... per config (Qwen3 on/off share one snapshot) -> artifacts/model_params/
+# Repeat inspect-params for every configuration. Missing N_text prevents a
+# winner from being nominated; it is never treated as zero compute.
 
 # 2. smoke on GPUs: 2 items/task/config, seed 0
 bash scripts/slurm/submit.sh smoke

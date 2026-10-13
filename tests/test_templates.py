@@ -95,10 +95,10 @@ class TestVendoredTemplateHashes:
         assert _models()["qwen3-4b-thinking-on"]["template_file"] == _models()["qwen3-4b-thinking-off"]["template_file"]
         assert _models()["qwen3-4b-thinking-on"]["template_sha256"] == _models()["qwen3-4b-thinking-off"]["template_sha256"]
 
-    def test_gated_configs_have_no_vendored_template(self):
+    def test_gated_configs_declare_precheck_vendor_destinations(self):
         for name in ("gemma-3-4b-it", "llama-3.2-3b-instruct"):
             raw = _models()[name]
-            assert raw["template_file"] is None
+            assert raw["template_file"].startswith("configs/templates/")
             assert raw["template_sha256"] is None
 
 

@@ -95,17 +95,43 @@ def check_gated_access(cfg: ConfigBundle) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _download_chat_template(model, destination: Path) -> str:
+    """Fetch the tokenizer template at the pinned revision and vendor it."""
+    import huggingface_hub
+
+    p = huggingface_hub.hf_hub_download(
+        model.repo, "tokenizer_config.json", revision=model.tokenizer_revision,
+    )
+    raw = json.loads(Path(p).read_text(encoding="utf-8"))
+    template = raw.get("chat_template")
+    if isinstance(template, dict):
+        template = template.get("default")
+    if not isinstance(template, str) or not template:
+        raise ValueError("tokenizer_config.json has no unambiguous chat_template")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(template, encoding="utf-8")
+    return template
+
+
 def check_templates(cfg: ConfigBundle) -> Dict[str, Dict[str, Any]]:
-    """sha256 every vendored template and compare against models.yaml locks."""
+    """Vendor missing pinned templates, hash them, and propose YAML locks."""
     out: Dict[str, Dict[str, Any]] = {}
     for name, m in cfg.models.items():
         if not m.template_file:
-            out[name] = {"template_file": None, "note": "no vendored template (runtime render only)"}
+            out[name] = {"template_file": None, "note": "configuration must declare a vendored template path"}
             continue
         path = cfg.root / m.template_file
         if not path.exists():
-            out[name] = {"template_file": str(m.template_file), "note": "file missing"}
-            continue
+            try:
+                _download_chat_template(m, path)
+            except Exception as e:  # gated access or malformed tokenizer config
+                out[name] = {
+                    "template_file": str(m.template_file),
+                    "note": "file missing and download failed",
+                    "error_kind": type(e).__name__,
+                    "error_short": str(e)[:300],
+                }
+                continue
         actual = sha256_hex(path.read_text(encoding="utf-8"))
         entry = {
             "template_file": str(m.template_file),
@@ -115,7 +141,8 @@ def check_templates(cfg: ConfigBundle) -> Dict[str, Dict[str, Any]]:
         entry["match"] = m.template_sha256 == actual if m.template_sha256 else None
         if not m.template_sha256:
             entry["proposed_yaml"] = (
-                f"  {name}:\n    ...\n    template_sha256: {actual}"
+                f"  {name}:\n    ...\n    template_file: {m.template_file}\n"
+                f"    template_sha256: {actual}"
             )
         out[name] = entry
     return out
@@ -159,6 +186,11 @@ def run_precheck(cfg: ConfigBundle, out_dir: Path) -> PrecheckReport:
             )
     rep.templates = check_templates(cfg)
     for name, t in rep.templates.items():
+        if t.get("error_kind"):
+            rep.problems.append(
+                f"template unavailable for {name}: {t.get('error_kind')} - "
+                f"{t.get('error_short')}"
+            )
         if t.get("match") is False:
             rep.problems.append(
                 f"template lock mismatch for {name}: pinned {t['sha256_pinned']} "
@@ -203,6 +235,8 @@ def print_precheck(rep: PrecheckReport) -> None:
         elif t.get("sha256_actual"):
             print(f"  {name}: UNLOCKED - proposed pin:")
             print(f"      template_sha256: {t['sha256_actual']}")
+        elif t.get("note"):
+            print(f"  {name}: {t['note']} ({t.get('error_kind', 'unknown error')})")
     print()
     hw = rep.hardware
     if not hw.get("torch_importable"):

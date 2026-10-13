@@ -92,11 +92,21 @@ class TransformersBackend(GenerationBackend):
     def _load(self) -> _ModelBundle:
         if self._bundle is None:
             import torch
-            from transformers import AutoModelForCausalLM, AutoTokenizer
+            from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
             t0 = time.monotonic()
-            model = AutoModelForCausalLM.from_pretrained(
+            pretrained_config = AutoConfig.from_pretrained(str(self.snapshot_dir))
+            if getattr(pretrained_config, "model_type", None) == "gemma3":
+                # Gemma 3 4B is a conditional-generation multimodal
+                # checkpoint even in this text-only experiment.  Loading it
+                # through AutoModelForCausalLM is unsupported.
+                from transformers import Gemma3ForConditionalGeneration
+                model_cls = Gemma3ForConditionalGeneration
+            else:
+                model_cls = AutoModelForCausalLM
+            model = model_cls.from_pretrained(
                 str(self.snapshot_dir),
+                config=pretrained_config,
                 torch_dtype=torch.bfloat16,
                 device_map=self.device,
                 attn_implementation=self._attn,
@@ -124,7 +134,8 @@ class TransformersBackend(GenerationBackend):
 
     def tokenize(self, prompt_text: str) -> List[int]:
         bundle = self._load()
-        return bundle.tokenizer(prompt_text, add_special_tokens=False).input_ids
+        rendered = self._render(prompt_text, bundle.tokenizer)
+        return bundle.tokenizer(rendered.text, add_special_tokens=False).input_ids
 
     def eos_strings(self) -> Optional[List[str]]:
         """End-of-sequence token strings used to trim generated text."""

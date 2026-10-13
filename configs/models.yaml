@@ -60,7 +60,7 @@ models:
     gated_note: "HF reports gated=manual; config and template files require auth and could not be pinned locally without a token. Accept the Gemma license on huggingface.co before precheck."
     reasoning_mode: no_thinking_channel
     template_kwargs: {}
-    template_file: null
+    template_file: configs/templates/gemma-3-4b-it.jinja
     template_sha256: null              # locked at first cluster precheck
     context_limit_source: model_config.text_config.max_position_embeddings
     param_exclusions: ["vision_tower.*", "multi_modal_projector.*"]
@@ -74,7 +74,7 @@ models:
     gated_note: "HF reports gated=manual; config and template files require auth and could not be pinned locally without a token. Accept the Llama 3.2 license on huggingface.co before precheck."
     reasoning_mode: no_thinking_channel
     template_kwargs: {}
-    template_file: null
+    template_file: configs/templates/llama-3.2-3b-instruct.jinja
     template_sha256: null              # locked at first cluster precheck
     context_limit_source: model_config.max_position_embeddings
     param_exclusions: []

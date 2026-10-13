@@ -86,6 +86,21 @@ def _load_ok_records(store_dir: Path, config: str, task: str, seeds: List[int]) 
     return out
 
 
+def _load_all_records(store_dir: Path, config: str, task: str, seeds: List[int]) -> List[Dict[str, Any]]:
+    store = PredictionStore(store_dir)
+    out: List[Dict[str, Any]] = []
+    for seed in seeds:
+        d = store_dir / config / task / str(seed)
+        if not d.exists():
+            continue
+        for p in sorted(d.glob("*.json")):
+            if p.name != "status.json":
+                r = store.load(p)
+                if r is not None:
+                    out.append(r)
+    return out
+
+
 def _load_unresolved(store_dir: Path, config: str, task: str, seeds: List[int]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for seed in seeds:
@@ -116,7 +131,7 @@ def _parse_and_score(
     return parsed, score
 
 
-def _aggregate_musique(cfg: ConfigBundle, records: List[Dict[str, Any]], items_by_id: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+def _aggregate_musique(cfg: ConfigBundle, records: List[Dict[str, Any]], items_by_id: Dict[str, Dict[str, Any]], n_boot: int = N_BOOT_DEFAULT) -> Dict[str, Any]:
     """Per (config, task): musique metrics with clustered CIs."""
     pos_by_group: Dict[str, List[float]] = {}      # group -> answerable F1s
     pos_all_f1: Dict[str, List[float]] = {}        # group -> all positive F1s
@@ -158,7 +173,7 @@ def _aggregate_musique(cfg: ConfigBundle, records: List[Dict[str, Any]], items_b
             neg_dev_by_group.setdefault(g, []).append(float(r["value"]))
 
     def _ci(values_by_group: Dict[str, List[float]]) -> BootstrapCI:
-        return group_bootstrap(values_by_group)
+        return group_bootstrap(values_by_group, n_boot=n_boot)
 
     return {
         "n_positives": n_pos,
@@ -177,7 +192,7 @@ def _aggregate_musique(cfg: ConfigBundle, records: List[Dict[str, Any]], items_b
     }
 
 
-def _aggregate_processbench(records: List[Dict[str, Any]], items_by_id: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+def _aggregate_processbench(records: List[Dict[str, Any]], items_by_id: Dict[str, Dict[str, Any]], n_boot: int = N_BOOT_DEFAULT) -> Dict[str, Any]:
     """Official per-subset metrics + subset-structured macro CIs."""
     by_subset: Dict[str, List[Any]] = {}
     for r in records:
@@ -227,17 +242,17 @@ def _aggregate_processbench(records: List[Dict[str, Any]], items_by_id: Dict[str
 
     return {
         "per_subset": per_subset,
-        "macro_f1": macro_group_bootstrap(macro_inputs["f1"], subset_stat=subset_f1_stat).to_dict(),
+        "macro_f1": macro_group_bootstrap(macro_inputs["f1"], subset_stat=subset_f1_stat, n_boot=n_boot).to_dict(),
         "macro_correct_solution_acc": macro_group_bootstrap(
-            macro_inputs["correct_solution_acc"], subset_stat=subset_acc_stat("c")
+            macro_inputs["correct_solution_acc"], subset_stat=subset_acc_stat("c"), n_boot=n_boot
         ).to_dict(),
         "macro_error_solution_acc": macro_group_bootstrap(
-            macro_inputs["error_solution_acc"], subset_stat=subset_acc_stat("e")
+            macro_inputs["error_solution_acc"], subset_stat=subset_acc_stat("e"), n_boot=n_boot
         ).to_dict(),
     }
 
 
-def _aggregate_simple(task: str, records: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _aggregate_simple(task: str, records: List[Dict[str, Any]], n_boot: int = N_BOOT_DEFAULT) -> Dict[str, Any]:
     by_group: Dict[str, List[float]] = {}
     extra: Dict[str, Any] = {}
     if task == "gsm8k":
@@ -266,14 +281,14 @@ def _aggregate_simple(task: str, records: List[Dict[str, Any]]) -> Dict[str, Any
         # (missing_final, invalid_format) is an incorrect answer with value 0.
         if r.get("value") is not None:
             by_group.setdefault(r["group_id"], []).append(float(r["value"]))
-    ci = group_bootstrap(by_group).to_dict()
+    ci = group_bootstrap(by_group, n_boot=n_boot).to_dict()
     em = None
     if task == "hotpotqa":
         em_by_group: Dict[str, List[float]] = {}
         for r in records:
             if r.get("value") is not None:
                 em_by_group.setdefault(r["group_id"], []).append(float(r["detail"].get("em", 0)))
-        em = group_bootstrap(em_by_group).to_dict()
+        em = group_bootstrap(em_by_group, n_boot=n_boot).to_dict()
     return {"accuracy": ci, "em": em, **extra}
 
 
@@ -292,7 +307,7 @@ def build_report(
         created_at_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         thresholds_status=cfg.thresholds.status,
     )
-    scored_by_group: Dict[Tuple[str, str], Dict[str, List[float]]] = {}
+    scored_by_group: Dict[Tuple[str, str], Dict[str, Dict[str, float]]] = {}
 
     for config_name in plan.configs:
         model_cfg = cfg.model(config_name)
@@ -301,7 +316,16 @@ def build_report(
         for task in plan.tasks:
             task_cfg = cfg.task(task)
             items = manifest_items_for_task(cfg, out_dir, plan_name, task)
+            runnable_items = [
+                it for it in items
+                if not (
+                    plan.require_approved_negatives
+                    and it.get("kind") == "negative"
+                    and it.get("review_status") != "approved"
+                )
+            ]
             items_by_id = {it["item_id"]: it for it in items}
+            all_records = _load_all_records(store_dir, config_name, task, seeds)
             records = _load_ok_records(store_dir, config_name, task, seeds)
             unresolved = _load_unresolved(store_dir, config_name, task, seeds)
             for r in unresolved:
@@ -313,6 +337,7 @@ def build_report(
                 continue
             # parse + score (deterministic, cheap; re-derived on every report)
             scored: List[Dict[str, Any]] = []
+            n_parse_errors = 0
             for r in records:
                 item = items_by_id.get(r["item_id"])
                 if item is None:
@@ -321,25 +346,58 @@ def build_report(
                     _, score = _parse_and_score(task_cfg, model_cfg.reasoning_mode, item, r)
                 except Exception as e:  # noqa: BLE001 - a broken parser must not kill the report
                     report.notes.append(f"parse/score error for {config_name}/{task}/{r['item_id']}: {e}")
+                    n_parse_errors += 1
                     continue
                 scored.append({**score.to_dict(), "seed": r["seed"]})
 
             if task == "musique_local":
-                metrics = _aggregate_musique(cfg, scored, items_by_id)
+                metrics = _aggregate_musique(cfg, scored, items_by_id, n_boot=n_boot)
             elif task == "processbench":
-                metrics = _aggregate_processbench(scored, items_by_id)
+                metrics = _aggregate_processbench(scored, items_by_id, n_boot=n_boot)
             else:
-                metrics = _aggregate_simple(task, scored)
+                metrics = _aggregate_simple(task, scored, n_boot=n_boot)
+            per_seed: Dict[str, Any] = {}
+            for seed in seeds:
+                seed_scored = [s for s in scored if s["seed"] == seed]
+                if task == "musique_local":
+                    per_seed[str(seed)] = _aggregate_musique(
+                        cfg, seed_scored, items_by_id, n_boot=0
+                    )
+                elif task == "processbench":
+                    per_seed[str(seed)] = _aggregate_processbench(
+                        seed_scored, items_by_id, n_boot=0
+                    )
+                else:
+                    per_seed[str(seed)] = _aggregate_simple(task, seed_scored, n_boot=0)
             metrics["n_records"] = len(records)
             metrics["seeds"] = seeds
+            metrics["per_seed"] = per_seed
+            expected_observations = len(runnable_items) * len(seeds)
+            observed_keys = {
+                (str(r.get("item_id")), int(r.get("seed", -1)))
+                for r in all_records
+            }
+            metrics["completion"] = {
+                "expected_observations": expected_observations,
+                "recorded_observations": len(observed_keys),
+                "ok_observations": len(records),
+                "non_ok_observations": len(all_records) - len(records),
+                "parse_score_errors": n_parse_errors,
+                "complete": (
+                    len(observed_keys) == expected_observations
+                    and len(records) == expected_observations
+                    and n_parse_errors == 0
+                ),
+            }
             report.per_config[config_name][task] = metrics
 
             # paired-difference inputs: group -> scored values (any nonzero status
             # with a value is an evaluated outcome; None = unscorable only)
-            by_group: Dict[str, List[float]] = {}
+            by_group: Dict[str, Dict[str, float]] = {}
             for s in scored:
                 if s.get("value") is not None:
-                    by_group.setdefault(s["group_id"], []).append(float(s["value"]))
+                    observation = f"{s['item_id']}::seed={s['seed']}"
+                    by_group.setdefault(s["group_id"], {})[observation] = float(s["value"])
             scored_by_group[(config_name, task)] = by_group
 
             # ---- compute metrics ----
@@ -357,11 +415,11 @@ def build_report(
                     "value": None,
                 })
             # align scores for efficiency (same-task, scored records only)
-            by_id = {s["item_id"]: s for s in scored}
+            by_id_seed = {(s["item_id"], s["seed"]): s for s in scored}
             eff_scores: List[float] = []
             eff_cs: List[float] = []
             for r, ci in zip(records, c_items):
-                s = by_id.get(r["item_id"])
+                s = by_id_seed.get((r["item_id"], r["seed"]))
                 if s is not None and s.get("value") is not None and ci["cproxy"] is not None:
                     eff_scores.append(float(s["value"]))
                     eff_cs.append(ci["cproxy"])
@@ -404,7 +462,7 @@ def _load_n_text(out_dir: Path, config_name: str) -> Optional[int]:
 
 def _paired_differences(
     plan: PlanCfg,
-    scored_by_group: Dict[Tuple[str, str], Dict[str, List[float]]],
+    scored_by_group: Dict[Tuple[str, str], Dict[str, Dict[str, float]]],
     n_boot: int,
 ) -> Dict[str, Any]:
     configs = list(plan.configs)
@@ -420,8 +478,8 @@ def _paired_differences(
                 )
                 pairs[f"{a} - {b}"] = {
                     **ci.to_dict(),
-                    "n_groups_missing_in_a": missing_a,
-                    "n_groups_missing_in_b": missing_b,
+                    "n_observations_missing_in_a": missing_a,
+                    "n_observations_missing_in_b": missing_b,
                 }
         out[task] = pairs
     return out
@@ -455,6 +513,7 @@ def _recommendation(cfg: ConfigBundle, plan: PlanCfg, report: ReportData, out_di
             "mean_cproxy_role_workload_50_50": _role_cproxy(mu_comp),
             "n_positives": mu.get("n_positives"),
             "n_negatives_reviewed": mu.get("n_negatives_reviewed"),
+            "complete": bool((mu.get("completion") or {}).get("complete")),
         })
         math_ck.append({
             "config": config_name,
@@ -462,6 +521,7 @@ def _recommendation(cfg: ConfigBundle, plan: PlanCfg, report: ReportData, out_di
             "macro_correct_solution_acc": _est(pb.get("macro_correct_solution_acc")),
             "macro_error_solution_acc": _est(pb.get("macro_error_solution_acc")),
             "mean_cproxy": pb_comp.get("mean"),
+            "complete": bool((pb.get("completion") or {}).get("complete")),
         })
 
     result: Dict[str, Any] = {
@@ -486,7 +546,8 @@ def _recommendation(cfg: ConfigBundle, plan: PlanCfg, report: ReportData, out_di
     mc = thr.math_checker
     ev_qualified = [
         e for e in evidence
-        if e["answerable_f1"] is not None and e["false_abstention_rate"] is not None
+        if e["complete"] and e["mean_cproxy_role_workload_50_50"] is not None
+        and e["answerable_f1"] is not None and e["false_abstention_rate"] is not None
         and e["reviewed_negative_correct_abstention"] is not None
         and e["answerable_f1"] >= ew["answerable_f1_min"]
         and e["false_abstention_rate"] <= ew["false_abstention_max"]
@@ -494,7 +555,8 @@ def _recommendation(cfg: ConfigBundle, plan: PlanCfg, report: ReportData, out_di
     ]
     mc_qualified = [
         m for m in math_ck
-        if m["macro_f1"] is not None and m["macro_correct_solution_acc"] is not None
+        if m["complete"] and m["mean_cproxy"] is not None
+        and m["macro_f1"] is not None and m["macro_correct_solution_acc"] is not None
         and m["macro_error_solution_acc"] is not None
         and m["macro_f1"] >= mc["macro_f1_min"]
         and m["macro_correct_solution_acc"] >= mc["macro_correct_solution_acc_min"]
@@ -524,7 +586,7 @@ def _role_cproxy(mu_comp: Dict[str, Any]) -> Optional[float]:
     if m_pos is None and m_neg is None:
         return None
     if m_pos is None or m_neg is None:
-        return m_pos if m_pos is not None else m_neg
+        return None
     return 0.5 * m_pos + 0.5 * m_neg
 
 

@@ -105,14 +105,19 @@ def macro_group_bootstrap(
 
     estimate = macro(values_by_subset_group)
     n_groups = sum(len(sg) for sg in values_by_subset_group.values())
-    n_values = sum(len(v) for sg in values_by_subset_group.values() for vs in sg.values() for v in vs)
+    n_values = sum(len(vs) for sg in values_by_subset_group.values() for vs in sg.values())
     samples: List[float] = []
     for _ in range(n_boot):
         resampled: Dict[str, Dict[str, List[float]]] = {}
         for subset, sg in values_by_subset_group.items():
             gs = list(sg)
             picked = [rng.choice(gs) for _ in range(len(gs))]
-            resampled[subset] = {g: sg[g] for g in picked}
+            # Preserve bootstrap multiplicity.  A dict keyed by the original
+            # group id collapses repeated draws and is not a bootstrap sample.
+            resampled[subset] = {
+                f"{draw_idx}:{g}": sg[g]
+                for draw_idx, g in enumerate(picked)
+            }
         s = macro(resampled)
         if s is not None:
             samples.append(s)
@@ -122,8 +127,8 @@ def macro_group_bootstrap(
 
 
 def paired_difference(
-    values_by_group_a: Dict[str, List[float]],
-    values_by_group_b: Dict[str, List[float]],
+    values_by_group_a: Dict[str, Dict[str, float]],
+    values_by_group_b: Dict[str, Dict[str, float]],
     n_boot: int = N_BOOT_DEFAULT,
     seed: int = BOOTSTRAP_SEED_DEFAULT,
 ) -> Tuple[BootstrapCI, int, int]:
@@ -134,16 +139,24 @@ def paired_difference(
     """
     rng = random.Random(seed)
     common = sorted(set(values_by_group_a) & set(values_by_group_b))
-    missing_a = len(set(values_by_group_b) - set(values_by_group_a))
-    missing_b = len(set(values_by_group_a) - set(values_by_group_b))
+    missing_a = sum(
+        len(set(values_by_group_b[g]) - set(values_by_group_a.get(g, {})))
+        for g in values_by_group_b
+    )
+    missing_b = sum(
+        len(set(values_by_group_a[g]) - set(values_by_group_b.get(g, {})))
+        for g in values_by_group_a
+    )
 
     deltas_by_group: Dict[str, List[float]] = {}
     for g in common:
-        # align by position within the group (seeds in identical order)
-        va, vb = list(values_by_group_a[g]), list(values_by_group_b[g])
-        n = min(len(va), len(vb))
-        deltas_by_group[g] = [va[i] - vb[i] for i in range(n)]
-        # unmatched replicates are noted in the counts, not compared
+        # Exact observation alignment prevents a missing item/seed from
+        # shifting every subsequent comparison within the group.
+        keys = sorted(set(values_by_group_a[g]) & set(values_by_group_b[g]))
+        deltas_by_group[g] = [
+            values_by_group_a[g][k] - values_by_group_b[g][k]
+            for k in keys
+        ]
 
     all_deltas = [d for ds in deltas_by_group.values() for d in ds]
     estimate = sum(all_deltas) / len(all_deltas) if all_deltas else None

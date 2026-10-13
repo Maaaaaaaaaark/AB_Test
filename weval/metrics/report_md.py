@@ -53,6 +53,16 @@ def render_markdown(report: ReportData) -> str:
                 continue
             lines.append(f"### {task} (n={metrics.get('n_records')}, seeds={metrics.get('seeds')})")
             lines.append("")
+            completion = metrics.get("completion") or {}
+            lines.append(
+                "- comparison completeness: "
+                f"**{'complete' if completion.get('complete') else 'INCOMPLETE'}** "
+                f"(expected={completion.get('expected_observations')}, "
+                f"ok={completion.get('ok_observations')}, "
+                f"non-ok={completion.get('non_ok_observations')}, "
+                f"parse errors={completion.get('parse_score_errors')})"
+            )
+            lines.append("")
             if task == "musique_local":
                 lines.append("| metric | estimate | 95% CI |")
                 lines.append("|---|---|---|")
@@ -97,6 +107,24 @@ def render_markdown(report: ReportData) -> str:
                 if task == "math":
                     lines.append(f"| unscorable (gold missing boxed) | {metrics.get('n_unscorable_gold_missing')} | - |")
                     lines.append(f"| missing final answer (open region / no boxed) | {metrics.get('n_missing_final')} | - |")
+            per_seed = metrics.get("per_seed") or {}
+            if per_seed:
+                lines.append("")
+                lines.append("#### Per-seed point estimates")
+                lines.append("")
+                lines.append("| seed | primary metric | estimate |")
+                lines.append("|---|---|---|")
+                for seed, sm in sorted(per_seed.items(), key=lambda kv: int(kv[0])):
+                    if task == "musique_local":
+                        metric_name = "answerable F1"
+                        value = (sm.get("answerable_f1") or {}).get("estimate")
+                    elif task == "processbench":
+                        metric_name = "macro F1"
+                        value = (sm.get("macro_f1") or {}).get("estimate")
+                    else:
+                        metric_name = "accuracy/F1"
+                        value = (sm.get("accuracy") or {}).get("estimate")
+                    lines.append(f"| {seed} | {metric_name} | {_fmt(value, 4)} |")
             lines.append("")
 
     if report.compute:

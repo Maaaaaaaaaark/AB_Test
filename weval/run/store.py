@@ -31,13 +31,13 @@ def item_fingerprint(item: Dict[str, Any]) -> str:
     return fingerprint(item)
 
 
-def record_fingerprints(item: Dict[str, Any], rendered_text: str, model_revision: str, template_sha256: Optional[str], gen_params_version: str, parser_version: str, scorer_version: str) -> Dict[str, str]:
+def record_fingerprints(item: Dict[str, Any], rendered_text: str, model_revision: str, template_sha256: Optional[str], generation_settings: Dict[str, Any], parser_version: str, scorer_version: str) -> Dict[str, str]:
     return {
         "item": item_fingerprint(item),
         "prompt": fingerprint(rendered_text),
         "model_revision": model_revision,
         "template_sha256": template_sha256 or "unlocked",
-        "gen_params_version": gen_params_version,
+        "generation_settings": fingerprint(generation_settings),
         "parser_version": parser_version,
         "scorer_version": scorer_version,
     }

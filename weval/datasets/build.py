@@ -209,9 +209,15 @@ def _frozen_reference(
 ) -> Dict[str, Any]:
     n_ref = cfg.splits["stages"]["reference"]["reference_per_dataset"]
     n_pilot = cfg.splits["stages"]["pilot"]["reference_per_dataset"]
+    import random
+
     chosen: List[Dict[str, Any]] = []
     excluded: List[Dict[str, Any]] = []
-    for i, r in enumerate(records):
+    order = list(range(len(records)))
+    seed = int(cfg.splits.get("split_seeds", {}).get("reference_subset_order", 0))
+    random.Random(seed).shuffle(order)
+    for i in order:
+        r = records[i]
         if len(chosen) >= n_ref:
             break
         rid = id_of(r, i)

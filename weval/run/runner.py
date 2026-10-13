@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from ..config import GENERATION_PARAMS_VERSION, ConfigBundle, PlanCfg
+from ..config import GENERATION_PARAMS, GENERATION_PARAMS_VERSION, ConfigBundle, PlanCfg
 from ..models.backend import GenerationBackend, InfrastructureError
 from ..parsing import PARSER_VERSIONS
 from ..prompts.renderers import render_item
@@ -149,6 +149,24 @@ def run_plan(
                 task_cfg = cfg.task(task)
                 items = items_for(task)
                 if plan.require_approved_negatives:
+                    proposed = [
+                        it for it in items
+                        if it.get("kind") == "negative" and it.get("review_status") != "approved"
+                    ]
+                    approved = [
+                        it for it in items
+                        if it.get("kind") == "negative" and it.get("review_status") == "approved"
+                    ]
+                    if (
+                        task == "musique_local"
+                        and plan_name in {"selection", "holdout"}
+                        and (proposed or not approved)
+                    ):
+                        raise PlanGateError(
+                            f"{plan_name}/{task}: approved-negative gate failed: "
+                            f"approved={len(approved)}, unapproved={len(proposed)}. "
+                            "Finish review and rebuild manifests before running."
+                        )
                     runnable_items = [
                         it for it in items
                         if not (it.get("kind") == "negative" and it.get("review_status") != "approved")
@@ -176,7 +194,15 @@ def run_plan(
                         rendered = render_item(item, cfg)
                         expected = record_fingerprints(
                             item, rendered.user_message, model_cfg.revision,
-                            model_cfg.template_sha256, GENERATION_PARAMS_VERSION,
+                            model_cfg.template_sha256,
+                            {
+                                "version": GENERATION_PARAMS_VERSION,
+                                "parameters": GENERATION_PARAMS,
+                                "max_new_tokens": task_cfg.max_new_tokens,
+                                "deadline_seconds": plan.deadline_seconds,
+                                "reasoning_mode": model_cfg.reasoning_mode,
+                                "template_kwargs": model_cfg.template_kwargs,
+                            },
                             parser_version, scorer_version,
                         )
                         rpath = store.record_path(config_name, task, seed, item_id)

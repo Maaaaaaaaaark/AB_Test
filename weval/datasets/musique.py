@@ -649,8 +649,14 @@ def split_parents(records: Dict[str, List[Dict[str, Any]]], cfg: ConfigBundle) -
     and holdout (next N), disjoint by parent id. Only eligible parents count
     toward the quotas; shortfalls are reported, never fabricated.
     """
+    import random
+
     train_ids = sorted(r["id"] for r in records.get("train", []))
     dev_ids = sorted(r["id"] for r in records.get("dev", []))
+    seed = cfg.splits.get("split_seeds", {}).get("musique_parent_order")
+    if seed is not None:
+        random.Random(int(seed)).shuffle(train_ids)
+        random.Random(int(seed)).shuffle(dev_ids)
     sel_n = cfg.splits["stages"]["selection"]["musique_parents"]
     hold_n = cfg.splits["stages"]["holdout"]["musique_parents"]
     return {

@@ -44,15 +44,34 @@ class HotpotQAItem:
 
 
 def _context_paragraphs(context: Any) -> List[Dict[str, str]]:
-    """HF distractor context: list of [title, [sentence, ...]] pairs, in order."""
+    """Normalize every representation used by ``datasets`` for HotpotQA.
+
+    Depending on the datasets/Arrow version, a sequence-of-structs is exposed
+    either as ``[{title, sentences}, ...]`` or as a struct-of-lists
+    ``{title: [...], sentences: [...]}``.  The original implementation treated
+    the latter as an iterable of pairs and silently turned the keys ``title``
+    and ``sentences`` into two corrupt paragraphs.
+    """
     paras: List[Dict[str, str]] = []
+    if isinstance(context, dict):
+        titles = context.get("title")
+        sentences_by_title = context.get("sentences")
+        if not isinstance(titles, list) or not isinstance(sentences_by_title, list):
+            raise ValueError("HotpotQA context dict must contain list fields title and sentences")
+        if len(titles) != len(sentences_by_title):
+            raise ValueError("HotpotQA context title/sentences lengths differ")
+        context = [
+            {"title": title, "sentences": sentences}
+            for title, sentences in zip(titles, sentences_by_title)
+        ]
     for pair in context:
         if isinstance(pair, dict):
-            # alternate representation: {"title": t, "sentences": [...]}
-            paras.append({"title": pair["title"], "text": " ".join(pair["sentences"])})
+            title, sentences = pair["title"], pair["sentences"]
         else:
             title, sentences = pair[0], pair[1]
-            paras.append({"title": title, "text": " ".join(sentences)})
+        if not isinstance(title, str) or not isinstance(sentences, (list, tuple)):
+            raise ValueError(f"invalid HotpotQA context entry: {pair!r}")
+        paras.append({"title": title, "text": " ".join(str(s) for s in sentences)})
     return paras
 
 
