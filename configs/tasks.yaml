@@ -9,10 +9,13 @@ task_config_version: 1
 
 musique_local:
   adapter: musique
-  instruction_version: musique-instruction-v1
+  # v2: explicit answer-line convention (parsed by weval/parsing/answer_line.py:
+  # last "Answer: X" line, else a single-line reply, else invalid format)
+  instruction_version: musique-instruction-v2
   instruction: |
     Answer the question below using only the provided information.
-    Give a short answer. If the provided information is insufficient to answer the question, output exactly NOT FOUND.
+    Give a short answer of a few words, not a full sentence. If the provided information is insufficient to answer the question, the answer must be exactly NOT FOUND.
+    If you write anything before your answer, put the answer alone on the last line in the form: Answer: <short answer>
   relation_note: 'In questions, an expression like "X >> relation" asks for that relation of X.'
   answer_format: short_answer_or_not_found
   max_new_tokens: 2048
@@ -30,11 +33,28 @@ processbench:
 
 gsm8k:
   adapter: gsm8k
-  instruction_version: gsm8k-instruction-v1
+  # v2: one fixed worked example in the official "#### <number>" format.
+  # In the first smoke run NO configuration wrote "#### <number>" (zero-shot
+  # instruction only), so the official extractor scored 0% for everyone and
+  # the column measured format, not arithmetic. The example comes from the
+  # GSM8K TRAIN split; references use the official TEST split, and any test
+  # question identical to it is excluded at build time.
+  instruction_version: gsm8k-instruction-v2
+  exemplar:
+    source: "openai/gsm8k main, train split, first record; calculator annotations <<...>> removed"
+    question: "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?"
+    answer: |-
+      Natalia sold 48/2 = 24 clips in May.
+      Natalia sold 48+24 = 72 clips altogether in April and May.
+      #### 72
   instruction: |
-    Question: {question}
+    Solve the math word problem step by step. End your response with the final numeric answer on its own line in the format #### <number>.
 
-    Solve the problem step by step, and put your final numeric answer on a line by itself in the format #### <number>.
+    Example:
+    Question: {exemplar_question}
+    Answer: {exemplar_answer}
+
+    Question: {question}
     Answer:
   max_new_tokens: 4096
   scorer: gsm8k_official
@@ -56,9 +76,13 @@ math:
 
 hotpotqa:
   adapter: hotpotqa
-  instruction_version: hotpotqa-instruction-v1
+  # v2: explicit answer-line convention (see musique_local); the whole reply
+  # is no longer scored as the answer
+  instruction_version: hotpotqa-instruction-v2
   instruction: |
-    Answer the following question using the information in the paragraphs below. Give a short answer.
+    Answer the following question using the information in the paragraphs below.
+    Give a short answer of a few words, not a full sentence.
+    If you write anything before your answer, put the answer alone on the last line in the form: Answer: <short answer>
 
     {paragraphs}
 
@@ -66,4 +90,4 @@ hotpotqa:
     Answer:
   max_new_tokens: 4096
   scorer: hotpotqa_answer_f1  # official answer F1; supporting-facts eval not applicable (documented)
-  parser: hotpotqa_free_text
+  parser: hotpotqa_answer_line

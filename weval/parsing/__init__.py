@@ -15,6 +15,8 @@ PARSERS = {
     "processbench_boxed_index": parse_processbench_answer,
     "gsm8k_official_regex": parse_gsm8k_answer,
     "math_boxed": parse_math_answer,
+    "hotpotqa_answer_line": parse_hotpotqa_answer,
+    # legacy name (same parser) so older configs/manifests still resolve
     "hotpotqa_free_text": parse_hotpotqa_answer,
 }
 
@@ -24,6 +26,7 @@ PARSER_VERSIONS = {
     "gsm8k_official_regex": GSM8K_PARSER_VERSION,
     "gsm8k_relaxed": GSM8K_PARSER_VERSION,  # diagnostic only
     "math_boxed": MATH_PARSER_VERSION,
+    "hotpotqa_answer_line": HOTPOTQA_PARSER_VERSION,
     "hotpotqa_free_text": HOTPOTQA_PARSER_VERSION,
     "reasoning_split": REASONING_PARSER_VERSION,
 }

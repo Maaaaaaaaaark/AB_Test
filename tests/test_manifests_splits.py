@@ -64,19 +64,19 @@ def test_musique_parents_size_counts_parents_not_items() -> None:
     assert len(chosen) == 4  # whole parents, not a bare 2-item slice
 
 
-def test_musique_parents_quota_is_discovered_from_positive_items() -> None:
-    """Real behavior detail: parent discovery takes the first k POSITIVE
-    items, so a parent whose 2 positive subquestions both come first consumes
-    both slots. Builder output has exactly one positive per parent, so this
-    only arises with hand-made manifests; asserted to lock the behavior in."""
+def test_musique_parents_quota_counts_distinct_parents_in_order() -> None:
+    """The quota counts the first k DISTINCT parents in manifest order (all of
+    their items are kept), so a parent whose positive was human-excluded
+    still occupies its slot through its negative and review decisions never
+    shift which parents a stage covers."""
     cfg = _cfg_with_stage("smoke", musique_parents=2)
     items = [
         _musique_item("a1", "PA"), _musique_item("a2", "PA"),
         _musique_item("b1", "PB"), _musique_item("c1", "PC"),
     ]
     chosen = _select_items(items, "smoke", "musique_local", cfg)
-    assert [it["item_id"] for it in chosen] == ["a1", "a2"]
-    assert {it["parent_id"] for it in chosen} == {"PA"}
+    assert [it["item_id"] for it in chosen] == ["a1", "a2", "b1"]
+    assert {it["parent_id"] for it in chosen} == {"PA", "PB"}
 
 
 def test_processbench_per_subset_caps_each_subset_independently() -> None:

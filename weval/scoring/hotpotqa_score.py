@@ -15,7 +15,7 @@ from typing import Any, Dict
 from ..parsing.base import ParsedAnswer
 from .base import ScoreRecord
 
-HOTPOTQA_SCORER_VERSION = "hotpotqa-answer-f1-v1"
+HOTPOTQA_SCORER_VERSION = "hotpotqa-answer-f1-v2"
 
 # Vendored official HotpotQA evaluation (verbatim).
 _VENDOR = Path(__file__).resolve().parents[2] / "vendor"
@@ -43,6 +43,7 @@ def score_hotpotqa(item: Dict[str, Any], parsed: ParsedAnswer) -> ScoreRecord:
             "f1": f1,
             "predicted_answer": pred,
             "gold_answer": gold,
+            "answer_source": parsed.diagnostics.get("answer_source"),
             "scorer_version": HOTPOTQA_SCORER_VERSION,
         },
     )

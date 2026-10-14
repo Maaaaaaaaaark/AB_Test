@@ -196,9 +196,9 @@ class TestReviewFile:
         assert "checks" in e
 
     def test_review_file_preserves_human_exclusion_on_rebuild(self, record, tmp_path):
-        """After a human exclusion the pair no longer builds (the rebuild
-        passes negative=None); the human decision must survive instead of
-        being overwritten by a build-derived entry."""
+        """The review file is written from build CANDIDATES, so a human
+        exclusion does not remove the candidate; on rebuild the same content
+        comes back and the decision is carried over."""
         pos = build_positive(record, 1, "selection")
         neg, _ = build_pair(record, 1, pos, "selection")
         path = tmp_path / "review.json"
@@ -209,14 +209,39 @@ class TestReviewFile:
             reviewed_by="tester", excluded_reason="answer in title",
         )
         path.write_text(json.dumps(entries), encoding="utf-8")
-        # rebuild after the exclusion: the pair is gone from the build output
-        write_review_file(path, [record], {record["id"]: pos}, {record["id"]: None}, {})
+        write_review_file(path, [record], {record["id"]: pos}, {record["id"]: neg}, {})
         e = json.loads(path.read_text(encoding="utf-8"))[0]
         assert e["review_status"] == "excluded"
         assert e["human_reviewed"] is True
         assert e["reviewed_by"] == "tester"
         assert e["excluded_reason"] == "answer in title"
-        assert e["negative_item_id"] is None
+        assert e["negative_item_id"] == neg.item_id
+        assert "stale_decisions" not in e
+
+    def test_decision_on_changed_content_is_dropped_as_stale(self, record, tmp_path):
+        """A decision is honored only for the content it was made on: if the
+        rebuilt item differs (e.g. paragraph order changed), the decision is
+        moved to stale_decisions and the item is back to proposed."""
+        pos = build_positive(record, 1, "selection")
+        neg, _ = build_pair(record, 1, pos, "selection")
+        path = tmp_path / "review.json"
+        write_review_file(path, [record], {record["id"]: pos}, {record["id"]: neg}, {})
+        entries = json.loads(path.read_text(encoding="utf-8"))
+        entries[0].update(
+            review_status="approved", human_reviewed=True, reviewed_by="tester",
+            positive_review_status="approved", positive_human_reviewed=True,
+            positive_reviewed_by="tester",
+        )
+        path.write_text(json.dumps(entries), encoding="utf-8")
+        # rebuild with a different paragraph order (another order seed)
+        pos2 = build_positive(record, 1, "selection", order_seed=7)
+        neg2, _ = build_pair(record, 1, pos2, "selection")
+        assert [p.source_idx for p in pos2.visible] != [p.source_idx for p in pos.visible]
+        write_review_file(path, [record], {record["id"]: pos2}, {record["id"]: neg2}, {})
+        e = json.loads(path.read_text(encoding="utf-8"))[0]
+        assert e["review_status"] == "proposed" and e["human_reviewed"] is False
+        assert e["positive_review_status"] == "proposed" and e["positive_human_reviewed"] is False
+        assert {d["target"] for d in e["stale_decisions"]} == {"negative", "positive"}
 
     def test_split_parents_disjoint(self, record):
         recs = {

@@ -10,7 +10,15 @@ decomposition (pinned release, authors' distribution):
   * five visible paragraphs: the annotated supporting paragraph + four
     paragraphs that are not supporting for ANY subquestion of the parent
     (strict rule: other supporting paragraphs are never used as distractors
-    in this controlled test),
+    in this controlled test). The four distractors (and the negative's
+    replacement paragraph) are a SEEDED sample of that pool, and the five
+    paragraphs are presented in a SEEDED random order (per item, recorded in
+    gold.paragraph_plan); the positive and its negative share the same order,
+    so the support position carries no information,
+  * a subquestion is eligible only if one of its gold answers appears
+    literally (official-style normalization) in the support paragraph's title
+    or text - a build-time screen; positives additionally go through human
+    review (positive_review_status in the review file) before formal stages,
   * the current answer, later answers, supporting labels and the full
     solution are never revealed.
 
@@ -50,7 +58,12 @@ for _p in (str(_VENDOR / "musique"), str(_VENDOR)):
         sys.path.insert(0, _p)
 from musique.metrics.answer import normalize_answer  # noqa: E402
 
-BUILDER_VERSION = "musique-local-builder-v1"
+BUILDER_VERSION = "musique-local-builder-v2"
+
+# Default per-item paragraph-order seed. The build passes
+# configs/splits.yaml split_seeds.musique_paragraph_order explicitly; this
+# default (same value) only serves direct calls such as unit tests.
+DEFAULT_PARAGRAPH_ORDER_SEED = 20261013
 
 REF_RE = re.compile(r"#(\d+)\b")
 RELATION_MARK = ">>"
@@ -66,7 +79,7 @@ class UnresolvableReference(Exception):
 
 @dataclass
 class VisibleParagraph:
-    slot: int  # 1..5, position in the visible list (original idx order)
+    slot: int  # 1..5, position in the visible list (seeded random order)
     source_idx: int  # original paragraph idx in the parent record
     title: str
     text: str
@@ -174,6 +187,23 @@ def non_supporting_anywhere(record: Dict[str, Any]) -> List[Dict[str, Any]]:
     ]
 
 
+def support_contains_answer(record: Dict[str, Any], subq_index: int) -> bool:
+    """Build-time screen: does a gold answer of this subquestion appear
+    literally in its support paragraph (title or text, as the model sees it)?
+
+    Necessary, not sufficient: the paragraph can mention the answer string
+    without stating the asked relation, which is why positives are ALSO
+    human-reviewed before formal stages.
+    """
+    d = record["question_decomposition"][subq_index]
+    supp_idx = d.get("paragraph_support_idx", -1)
+    supp = next((p for p in record["paragraphs"] if p["idx"] == supp_idx), None)
+    if supp is None:
+        return False
+    gold, _ = _gold_for_subquestion(record, subq_index)
+    return _literal_in_text(gold, f"{supp.get('title', '')}\n{supp.get('paragraph_text', '')}")
+
+
 def eligible_subquestions(record: Dict[str, Any]) -> List[int]:
     decomp = record["question_decomposition"]
     paras = {p["idx"]: p for p in record["paragraphs"]}
@@ -189,8 +219,43 @@ def eligible_subquestions(record: Dict[str, Any]) -> List[int]:
             resolve_references(d["question"], decomp, i)
         except UnresolvableReference:
             continue
+        if not support_contains_answer(record, i):
+            continue  # gold answer not visible in its support paragraph
         eligible.append(i)
     return eligible
+
+
+def paragraph_plan(
+    record: Dict[str, Any], subq_index: int, order_seed: int = DEFAULT_PARAGRAPH_ORDER_SEED
+) -> Dict[str, Any]:
+    """Seeded, deterministic paragraph plan for one (parent, subquestion).
+
+    * distractor_idxs: 4 paragraphs sampled from the strict non-supporting pool,
+    * replacement_idx: a 5th pool paragraph for the paired negative (None if
+      the pool has fewer than 5),
+    * slot_order: source idxs of the 5 visible paragraphs in presentation
+      order (support + distractors, shuffled), so the support slot is uniform
+      rather than almost always last.
+    Depends only on (order_seed, parent id, subquestion index) and the pool
+    membership - never on model outputs.
+    """
+    d = record["question_decomposition"][subq_index]
+    supp_idx = d["paragraph_support_idx"]
+    pool_idxs = sorted(p["idx"] for p in non_supporting_anywhere(record))
+    rng = random.Random(_item_seed(order_seed, f"{record['id']}:s{subq_index}:paragraphs"))
+    perm = list(pool_idxs)
+    rng.shuffle(perm)
+    distractors = perm[:4]
+    replacement = perm[4] if len(perm) >= 5 else None
+    order = [supp_idx] + distractors
+    rng.shuffle(order)
+    return {
+        "order_seed": order_seed,
+        "distractor_idxs": distractors,
+        "replacement_idx": replacement,
+        "slot_order": order,
+        "support_slot": order.index(supp_idx) + 1,
+    }
 
 
 def _gold_for_subquestion(record: Dict[str, Any], subq_index: int) -> Tuple[List[str], str]:
@@ -246,28 +311,29 @@ def _syntax_audit(question: str) -> Dict[str, bool]:
 
 
 def build_positive(
-    record: Dict[str, Any], subq_index: int, split: str, syntax: Optional[Dict[str, bool]] = None
+    record: Dict[str, Any],
+    subq_index: int,
+    split: str,
+    syntax: Optional[Dict[str, bool]] = None,
+    order_seed: int = DEFAULT_PARAGRAPH_ORDER_SEED,
 ) -> MusiqueItem:
     decomp = record["question_decomposition"]
     d = decomp[subq_index]
     question, used = resolve_references(d["question"], decomp, subq_index)
     gold, alias_source = _gold_for_subquestion(record, subq_index)
-    pool = non_supporting_anywhere(record)
-    pool_by_idx = {p["idx"]: p for p in pool}
     supp_idx = d["paragraph_support_idx"]
     supp = next(p for p in record["paragraphs"] if p["idx"] == supp_idx)
-    distractor_idxs = sorted(p["idx"] for p in pool)[:4]
-    chosen = [supp] + [pool_by_idx[i] for i in distractor_idxs]
-    chosen_sorted = sorted(chosen, key=lambda p: p["idx"])
+    plan = paragraph_plan(record, subq_index, order_seed)
+    by_idx = {p["idx"]: p for p in record["paragraphs"]}
     visible = [
         VisibleParagraph(
             slot=pos + 1,
-            source_idx=p["idx"],
-            title=p["title"],
-            text=p["paragraph_text"],
-            role="support" if p["idx"] == supp_idx else "distractor",
+            source_idx=idx,
+            title=by_idx[idx]["title"],
+            text=by_idx[idx]["paragraph_text"],
+            role="support" if idx == supp_idx else "distractor",
         )
-        for pos, p in enumerate(chosen_sorted)
+        for pos, idx in enumerate(plan["slot_order"])
     ]
     item = MusiqueItem(
         item_id=f"{record['id']}:s{subq_index}",
@@ -286,8 +352,12 @@ def build_positive(
         expected="answer",
         visible=visible,
         syntax=syntax or _syntax_audit(d["question"]),
-        support_literal_screening=_literal_in_text(gold, supp["paragraph_text"]),
-        review_status="na",
+        support_literal_screening=_literal_in_text(
+            gold, f"{supp.get('title', '')}\n{supp['paragraph_text']}"
+        ),
+        # positives are human-reviewed too: "proposed" until a reviewer
+        # approves them in the review file (formal stages require approval)
+        review_status="proposed",
         human_reviewed=False,
         excluded_reason=None,
         gold={
@@ -298,6 +368,7 @@ def build_positive(
             "parent_answer": record["answer"],
             "parent_answer_aliases": list(record.get("answer_aliases", [])),
             "support_paragraph_idx": supp_idx,
+            "paragraph_plan": plan,
         },
     )
     return item
@@ -319,7 +390,11 @@ def build_pair(
     if len(pool) < 5:
         return None, "insufficient_non_supporting_paragraphs"
     supp_idx = d["paragraph_support_idx"]
-    fifth = pool_by_idx[sorted(p["idx"] for p in pool)[4]]
+    plan = positive.gold.get("paragraph_plan") or paragraph_plan(record, subq_index)
+    replacement_idx = plan.get("replacement_idx")
+    if replacement_idx is None or replacement_idx not in pool_by_idx:
+        return None, "insufficient_non_supporting_paragraphs"
+    fifth = pool_by_idx[replacement_idx]
     visible = []
     for p in positive.visible:
         if p.role == "support":
@@ -378,12 +453,16 @@ class MusiqueBuildReport:
     n_parents_total: int
     n_parents_eligible: int
     n_positives_built: int = 0
+    n_positives_approved: int = 0
     n_pair_candidates: int = 0
     n_pairs_approved: int = 0
     exclusions: Dict[str, int] = field(default_factory=dict)
     syntax_distribution: Dict[str, int] = field(default_factory=dict)
     hop_distribution: Dict[str, int] = field(default_factory=dict)
     parent_eligibility_reasons: Dict[str, int] = field(default_factory=dict)
+    # 1..5 -> count of built positives whose support paragraph sits at that
+    # slot; should be roughly uniform (it was ~always 5 in builder v1)
+    support_slot_distribution: Dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -391,12 +470,14 @@ class MusiqueBuildReport:
             "n_parents_total": self.n_parents_total,
             "n_parents_eligible": self.n_parents_eligible,
             "n_positives_built": self.n_positives_built,
+            "n_positives_approved": self.n_positives_approved,
             "n_pair_candidates": self.n_pair_candidates,
             "n_pairs_approved": self.n_pairs_approved,
             "exclusions": self.exclusions,
             "syntax_distribution": self.syntax_distribution,
             "hop_distribution": self.hop_distribution,
             "parent_eligibility_reasons": self.parent_eligibility_reasons,
+            "support_slot_distribution": self.support_slot_distribution,
         }
 
 
@@ -414,6 +495,12 @@ def _parent_eligibility_reason(record: Dict[str, Any]) -> str:
         return "no_supported_subquestion"
     if not any(_refs_resolvable(d, decomp, i) for i, d in enumerate(decomp)):
         return "no_resolvable_subquestion"
+    if not any(
+        _refs_resolvable(d, decomp, i) and d.get("paragraph_support_idx") in paras
+        and support_contains_answer(record, i)
+        for i, d in enumerate(decomp)
+    ):
+        return "no_subquestion_with_answer_in_support"
     return "unknown"
 
 
@@ -442,6 +529,23 @@ def choose_subquestion(record: Dict[str, Any], split_seed: int) -> Tuple[int, Li
     return rng.choice(candidates), eligible
 
 
+def item_content_fingerprint(item: MusiqueItem) -> str:
+    """What a reviewer actually judged: question, gold, visible paragraphs in
+    order. A human decision is honored only while this fingerprint matches,
+    so a rebuild that changes an item's content (e.g. builder v1 -> v2
+    paragraph order) can never inherit a decision made on other content."""
+    return fingerprint({
+        "item_id": item.item_id,
+        "question": item.question,
+        "reference_answers": item.reference_answers,
+        "visible": [(p.slot, p.source_idx, p.title, p.text) for p in item.visible],
+    })
+
+
+def _decision_matches(entry: Optional[Dict[str, Any]], key: str, item: MusiqueItem) -> bool:
+    return bool(entry) and entry.get(key) == item_content_fingerprint(item)
+
+
 def build_musique(
     records: List[Dict[str, Any]],
     split: str,
@@ -449,13 +553,24 @@ def build_musique(
     parent_ids: Optional[List[str]] = None,
     require_approved: bool = False,
     approved_pairs: Optional[Dict[str, Any]] = None,
+    order_seed: int = DEFAULT_PARAGRAPH_ORDER_SEED,
+    positive_reviews: Optional[Dict[str, Any]] = None,
+    require_approved_positives: bool = False,
 ) -> Tuple[List[MusiqueItem], MusiqueBuildReport, Dict[str, str]]:
     """Build items for a split from given parents (deterministic order).
 
     Returns (items, report, pair_exclusions) where pair_exclusions maps
     parent id -> exclusion reason for parents whose pair could not be built.
+
+    Review decisions (both keyed by item id, honored only while the stored
+    content fingerprint matches the rebuilt item):
+      * approved_pairs:   negative_item_id -> review entry (negative decision)
+      * positive_reviews: positive_item_id -> review entry (positive decision)
+    Human-excluded positives/negatives are left out and counted; unreviewed
+    ones are included as "proposed" unless the require_* flag is set.
     """
     approved_pairs = approved_pairs or {}
+    positive_reviews = positive_reviews or {}
     selected: List[MusiqueItem] = []
     pair_exclusions: Dict[str, str] = {}
     report = MusiqueBuildReport(version=BUILDER_VERSION, n_parents_total=len(records), n_parents_eligible=0)
@@ -472,9 +587,24 @@ def build_musique(
             )
             continue
         report.n_parents_eligible += 1
-        pos = build_positive(record, subq, split)
-        selected.append(pos)
+        pos = build_positive(record, subq, split, order_seed=order_seed)
         report.n_positives_built += 1
+        slot = str(pos.gold["paragraph_plan"]["support_slot"])
+        report.support_slot_distribution[slot] = report.support_slot_distribution.get(slot, 0) + 1
+        pentry = positive_reviews.get(pos.item_id)
+        p_status = (pentry or {}).get("positive_review_status")
+        p_human = bool((pentry or {}).get("positive_human_reviewed"))
+        if p_human and p_status == "approved" and _decision_matches(pentry, "positive_fingerprint", pos):
+            pos.review_status = "approved"
+            pos.human_reviewed = True
+            report.n_positives_approved += 1
+            selected.append(pos)
+        elif p_human and p_status == "excluded" and _decision_matches(pentry, "positive_fingerprint", pos):
+            reason_p = pentry.get("positive_excluded_reason") or "review_excluded"
+            key = f"positive_review:{reason_p}"
+            report.exclusions[key] = report.exclusions.get(key, 0) + 1
+        elif not require_approved_positives:
+            selected.append(pos)  # "proposed": development use only
         report.syntax_distribution[
             "relation" if pos.syntax["has_relation"] else "natural"
         ] = report.syntax_distribution.get(
@@ -490,6 +620,8 @@ def build_musique(
             continue
         report.n_pair_candidates += 1
         entry = approved_pairs.get(neg.item_id)
+        if entry is not None and not _decision_matches(entry, "negative_fingerprint", neg):
+            entry = None  # decision was made on different content: stale, needs re-review
         if entry is not None and entry.get("review_status") == "approved" and entry.get("human_reviewed"):
             neg.review_status = "approved"
             neg.human_reviewed = True
@@ -510,10 +642,22 @@ def review_entry(
     record: Dict[str, Any], subq_index: int, positive: MusiqueItem,
     negative: Optional[MusiqueItem], exclusion_reason: Optional[str],
 ) -> Dict[str, Any]:
-    """One row of the negative review file (provenance + checks + status)."""
+    """One row of the review file: the paired NEGATIVE decision
+    (review_status ...) and the POSITIVE decision (positive_review_status ...),
+    with everything a reviewer needs to judge both without opening manifests.
+
+    Positive question for the reviewer: does the support paragraph, read on
+    its own, answer the resolved question with the gold answer?
+    Negative question: with the support paragraph replaced, is the question
+    really unanswerable from the five visible paragraphs?
+    """
     checks = {
         "positive_support_literal_screening": positive.support_literal_screening,
     }
+    support = next((p for p in positive.visible if p.role == "support"), None)
+    replacement = None
+    if negative is not None and support is not None:
+        replacement = next((p for p in negative.visible if p.slot == support.slot), None)
     if negative is not None:
         checks.update(_negative_checks(positive.reference_answers, negative))
     entry = {
@@ -533,13 +677,32 @@ def review_entry(
         "alias_source": positive.alias_source,
         "syntax": positive.syntax,
         "is_terminal": positive.is_terminal,
+        "support_paragraph": (
+            {"slot": support.slot, "title": support.title, "text": support.text}
+            if support is not None else None
+        ),
+        "replacement_paragraph": (
+            {"slot": replacement.slot, "title": replacement.title, "text": replacement.text}
+            if replacement is not None else None
+        ),
         "checks": checks,
+        # ---- negative decision ----
         "proposed_label": "unanswerable" if negative is not None else None,
         "excluded_reason": exclusion_reason,
         "review_status": "proposed" if negative is not None else "excluded",
         "human_reviewed": False,
         "reviewed_by": None,
         "review_note": None,
+        "negative_fingerprint": (
+            item_content_fingerprint(negative) if negative is not None else None
+        ),
+        # ---- positive decision ----
+        "positive_review_status": "proposed",
+        "positive_human_reviewed": False,
+        "positive_reviewed_by": None,
+        "positive_review_note": None,
+        "positive_excluded_reason": None,
+        "positive_fingerprint": item_content_fingerprint(positive),
         "provenance": {
             "builder_version": BUILDER_VERSION,
             "source": MUSIQUE_ANS_RELEASE,
@@ -570,13 +733,16 @@ def write_review_file(
     negatives: Dict[str, Optional[MusiqueItem]],  # by parent id; None if excluded
     exclusion_reasons: Dict[str, str],   # by parent id
 ) -> int:
-    """Persist the negative-pair review file. Returns number of pair candidates.
+    """Persist the review file. Returns number of negative pair candidates.
 
     Human decisions survive rebuilds: for parents whose existing entry is
-    human-reviewed (human_reviewed=true), the decision fields (review_status,
-    human_reviewed, reviewed_by, review_note, excluded_reason) are carried
-    over; everything else (checks, provenance) is regenerated from the fresh
-    build. Build-derived entries (human_reviewed=false) are regenerated.
+    human-reviewed, the decision fields are carried over - separately for
+    the negative (review_status, human_reviewed, reviewed_by, review_note,
+    excluded_reason) and the positive (positive_*) - but ONLY when the stored
+    content fingerprint matches the rebuilt item. A decision made on other
+    content (e.g. before the paragraph order changed) is dropped and kept in
+    stale_decisions for the record; the item needs re-review.
+    Everything else (checks, provenance, paragraphs) is regenerated.
     """
     existing: Dict[str, Dict[str, Any]] = {}
     if path.exists():
@@ -594,12 +760,50 @@ def write_review_file(
         neg = negatives.get(pid)
         entry = review_entry(record, pos.subq_index, pos, neg, exclusion_reasons.get(pid))
         old = existing.get(pid)
+        stale: List[Dict[str, Any]] = list((old or {}).get("stale_decisions") or [])
         if old is not None and old.get("human_reviewed"):
-            entry["review_status"] = old.get("review_status", entry["review_status"])
-            entry["human_reviewed"] = True
-            entry["reviewed_by"] = old.get("reviewed_by")
-            entry["review_note"] = old.get("review_note")
-            entry["excluded_reason"] = old.get("excluded_reason")
+            same_neg = (
+                old.get("negative_item_id") == entry["negative_item_id"]
+                and old.get("negative_fingerprint") == entry["negative_fingerprint"]
+            )
+            if same_neg:
+                entry["review_status"] = old.get("review_status", entry["review_status"])
+                entry["human_reviewed"] = True
+                entry["reviewed_by"] = old.get("reviewed_by")
+                entry["review_note"] = old.get("review_note")
+                entry["excluded_reason"] = old.get("excluded_reason")
+                if old.get("reviewed_at_utc"):
+                    entry["reviewed_at_utc"] = old["reviewed_at_utc"]
+            else:
+                stale.append({
+                    "target": "negative",
+                    "negative_item_id": old.get("negative_item_id"),
+                    "review_status": old.get("review_status"),
+                    "review_note": old.get("review_note"),
+                    "reason": "content_changed",
+                })
+        if old is not None and old.get("positive_human_reviewed"):
+            same_pos = (
+                old.get("positive_item_id") == entry["positive_item_id"]
+                and old.get("positive_fingerprint") == entry["positive_fingerprint"]
+            )
+            if same_pos:
+                for k in (
+                    "positive_review_status", "positive_human_reviewed", "positive_reviewed_by",
+                    "positive_review_note", "positive_excluded_reason", "positive_reviewed_at_utc",
+                ):
+                    if k in old:
+                        entry[k] = old[k]
+            else:
+                stale.append({
+                    "target": "positive",
+                    "positive_item_id": old.get("positive_item_id"),
+                    "positive_review_status": old.get("positive_review_status"),
+                    "positive_review_note": old.get("positive_review_note"),
+                    "reason": "content_changed",
+                })
+        if stale:
+            entry["stale_decisions"] = stale
         entries.append(entry)
         if neg is not None:
             n_candidates += 1
@@ -630,6 +834,15 @@ def load_review_map(review_path: Path) -> Dict[str, Dict[str, Any]]:
     with open(review_path, encoding="utf-8") as f:
         entries = json.load(f)
     return {e["negative_item_id"]: e for e in entries if e.get("negative_item_id")}
+
+
+def load_positive_review_map(review_path: Path) -> Dict[str, Dict[str, Any]]:
+    """ALL review entries keyed by positive_item_id (positive decisions)."""
+    if not review_path.exists():
+        return {}
+    with open(review_path, encoding="utf-8") as f:
+        entries = json.load(f)
+    return {e["positive_item_id"]: e for e in entries if e.get("positive_item_id")}
 
 
 def load_approved_pairs(review_path: Path) -> Dict[str, Dict[str, Any]]:

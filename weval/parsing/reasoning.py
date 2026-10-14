@@ -57,6 +57,22 @@ class ReasoningSplit:
         }
 
 
+def merge_stop_strings(*groups: Optional[List[str]]) -> Optional[List[str]]:
+    """Union of stop-string lists (order-preserving, empties dropped).
+
+    Used to combine the strings recorded in a prediction record with the
+    model configuration's declared stop_strings, so a record produced before
+    a stop string was known (e.g. Gemma's <end_of_turn>) is still trimmed
+    correctly when it is re-scored. Returns None when nothing is known.
+    """
+    out: List[str] = []
+    for g in groups:
+        for s in g or []:
+            if s and s not in out:
+                out.append(str(s))
+    return out or None
+
+
 def strip_eos(text: str, eos_strings: Optional[List[str]] = None) -> str:
     """Remove trailing end-of-sequence token strings (and whitespace).
 

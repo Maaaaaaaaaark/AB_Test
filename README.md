@@ -94,10 +94,17 @@ weval run --plan smoke --backend scripted --default-text "NOT FOUND"
 weval report --plan smoke
 weval worked-examples --plan smoke
 
-# 5. human review of the paired negatives (REQUIRED before pilot)
+# 5. human review (REQUIRED before pilot): each parent has TWO decisions.
+#    The review file shows the support paragraph and the negative's
+#    replacement paragraph, so no manifest needs to be opened.
+#    negative: with the support paragraph replaced, is it really unanswerable?
 weval review list --only proposed
 weval review approve --parent <parent_id>
 weval review exclude --parent <parent_id> --note "<reason>"
+#    positive: does the support paragraph, read on its own, answer the
+#    resolved question with the gold answer?
+weval review approve --parent <parent_id> --target positive
+weval review exclude --parent <parent_id> --target positive --note "<reason>"
 
 # Freeze the review decisions into the manifests used by the runner.
 weval build

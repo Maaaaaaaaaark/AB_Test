@@ -43,9 +43,18 @@ def _select_items(items: List[Dict[str, Any]], stage: str, task: str, cfg: Confi
     sizes = cfg.splits["stages"][stage]
     if task == "musique_local":
         k = sizes["musique_parents"]
-        positives = [it for it in items if it.get("kind") == "positive"]
-        chosen_parents = {p["parent_id"] for p in positives[:k]}
-        return [it for it in items if it.get("parent_id") in chosen_parents]
+        # First k distinct parents in manifest order (a parent whose positive
+        # was human-excluded still counts through its negative, so review
+        # decisions never shift which parents a stage covers).
+        chosen_parents: List[str] = []
+        for it in items:
+            pid = it.get("parent_id")
+            if pid not in chosen_parents:
+                if len(chosen_parents) >= k:
+                    break
+                chosen_parents.append(pid)
+        keep = set(chosen_parents)
+        return [it for it in items if it.get("parent_id") in keep]
     if task == "processbench":
         k = sizes["processbench_per_subset"]
         picked: List[Dict[str, Any]] = []

@@ -12,6 +12,12 @@ Details that matter for the evaluation contract:
     and recorded unlocked,
   * raw generated token ids and raw decoded text (special tokens included)
     are stored; cleanup happens later in the parsing layer,
+  * templates that render {{ bos_token }} get the pinned (or tokenizer) BOS
+    string, and the first prompt token is asserted to be exactly one BOS
+    (PromptContractError aborts the run otherwise),
+  * eos_strings() returns EVERY stop string (tokenizer eos, decoded
+    generation_config eos ids, declared stop_strings) - Gemma stops on
+    <end_of_turn>, which is not its tokenizer.eos_token,
   * a deadline logits processor aborts decoding at the wall-clock deadline;
     that is an infrastructure failure (never scored as partial output),
   * reaching max_new_tokens is a NORMAL evaluated outcome (finish_reason
@@ -32,7 +38,7 @@ from ..config import GENERATION_PARAMS, ModelCfg
 from .backend import DeadlineExceeded, GenerationBackend, GenerationResult, InfrastructureError, make_item_seed
 from .templates import RenderedTemplate, render_prompt, render_prompt_runtime
 
-TRANSFORMERS_BACKEND_VERSION = "transformers-backend-v2"
+TRANSFORMERS_BACKEND_VERSION = "transformers-backend-v3"
 
 # GenerationConfig keys that are per-item protocol overrides (dtype/quantization/
 # backend/batch_size are backend-level and recorded separately).
@@ -54,6 +60,80 @@ class DeadlineLogitsProcessor:
         if time.monotonic() > self.deadline:
             raise DeadlineExceeded(self.deadline_seconds, elapsed)
         return scores
+
+
+def collect_stop_strings(
+    tokenizer: Any,
+    generation_config: Any,
+    declared: Optional[List[str]] = None,
+) -> Optional[List[str]]:
+    """Union of tokenizer.eos_token, the decoded generation_config
+    eos_token_id(s) and the configuration's declared stop_strings.
+
+    Pure function (no torch) so it is unit-testable with fakes.
+    """
+    out: List[str] = []
+
+    def add(s: Any) -> None:
+        if s and str(s) not in out:
+            out.append(str(s))
+
+    add(getattr(tokenizer, "eos_token", None))
+    ids = getattr(generation_config, "eos_token_id", None) if generation_config is not None else None
+    if ids is None:
+        ids = []
+    elif isinstance(ids, int):
+        ids = [ids]
+    for i in ids:
+        try:
+            add(tokenizer.convert_ids_to_tokens(int(i)))
+        except Exception:  # noqa: BLE001 - an unknown id must not kill the run
+            continue
+    for s in declared or []:
+        add(s)
+    return out or None
+
+
+class PromptContractError(RuntimeError):
+    """The rendered prompt violates a contract (e.g. missing or doubled BOS).
+
+    Deliberately NOT an InfrastructureError: it is a configuration bug, so the
+    run aborts instead of being retried or recorded as a model failure.
+    """
+
+
+def check_prompt_bos(
+    prompt_token_ids: List[int],
+    bos_token_id: Optional[int],
+    template_references_bos: bool,
+    config_name: str = "",
+) -> Dict[str, Any]:
+    """Assert BOS handling for templates that render {{ bos_token }}.
+
+    Prompts are tokenized with add_special_tokens=False, so the BOS token is
+    present only if the template rendered it. When the template references
+    bos_token and the tokenizer has a bos_token_id, the first prompt token
+    must be that id and the second must not be (no double BOS).
+    Returns a small record for the prediction's template info.
+    """
+    info: Dict[str, Any] = {
+        "template_references_bos": bool(template_references_bos),
+        "bos_token_id": bos_token_id,
+        "first_token_id": prompt_token_ids[0] if prompt_token_ids else None,
+    }
+    if not template_references_bos or bos_token_id is None:
+        info["bos_check"] = "not_applicable"
+        return info
+    if not prompt_token_ids or prompt_token_ids[0] != bos_token_id:
+        raise PromptContractError(
+            f"{config_name}: the chat template renders {{{{ bos_token }}}} but the "
+            f"first prompt token is {info['first_token_id']!r}, not BOS "
+            f"{bos_token_id!r}. Set template_kwargs.bos_token in configs/models.yaml."
+        )
+    if len(prompt_token_ids) > 1 and prompt_token_ids[1] == bos_token_id:
+        raise PromptContractError(f"{config_name}: double BOS at the start of the prompt")
+    info["bos_check"] = "ok"
+    return info
 
 
 @dataclass
@@ -142,12 +222,18 @@ class TransformersBackend(GenerationBackend):
         return bundle.tokenizer(rendered.text, add_special_tokens=False).input_ids
 
     def eos_strings(self) -> Optional[List[str]]:
-        """End-of-sequence token strings used to trim generated text."""
+        """Every string generation can stop on, used to trim generated text.
+
+        tokenizer.eos_token alone is NOT enough: Gemma 3 stops on
+        <end_of_turn> (generation_config.eos_token_id = [<eos>, <end_of_turn>])
+        while tokenizer.eos_token is "<eos>". See collect_stop_strings.
+        """
         bundle = self._load()
-        eos = getattr(bundle.tokenizer, "eos_token", None)
-        if not eos:
-            return None
-        return [str(eos)]
+        return collect_stop_strings(
+            bundle.tokenizer,
+            getattr(bundle.model, "generation_config", None),
+            self.model_cfg.stop_strings,
+        )
 
     @property
     def context_limit(self) -> Optional[int]:
@@ -178,6 +264,14 @@ class TransformersBackend(GenerationBackend):
         input_tensor = encoded["input_ids"].to(model.device)
         attention_mask = encoded["attention_mask"].to(model.device)
         prompt_tokens = input_tensor[0].tolist()
+        # Fail fast (never retried, never scored) if a template that renders
+        # {{ bos_token }} produced a prompt without exactly one leading BOS.
+        bos_info = check_prompt_bos(
+            prompt_tokens,
+            getattr(tokenizer, "bos_token_id", None),
+            rendered.references_bos,
+            self.model_cfg.name,
+        )
 
         item_seed = make_item_seed(seed, item_id)
         torch.manual_seed(item_seed)
@@ -248,15 +342,16 @@ class TransformersBackend(GenerationBackend):
             tokenizer_used=self.model_cfg.name,
             merged_generation_params=merged_record,
             extra={
-                "template": rendered.to_dict(),
+                "template": {**rendered.to_dict(), "bos": bos_info},
                 "model_revision": self.model_cfg.revision,
             },
         )
 
     def _render(self, prompt_text: str, tokenizer: Any) -> RenderedTemplate:
         messages = [{"role": "user", "content": prompt_text}]
+        bos_fallback = getattr(tokenizer, "bos_token", None)
         if self.model_cfg.template_sha256 or self.model_cfg.template_file:
-            return render_prompt(self.model_cfg, messages, self.root)
+            return render_prompt(self.model_cfg, messages, self.root, bos_fallback=bos_fallback)
         template_str = getattr(tokenizer, "chat_template", None)
         if not template_str:
             raise InfrastructureError(
@@ -264,7 +359,7 @@ class TransformersBackend(GenerationBackend):
                 f"tokenizer for {self.model_cfg.name!r} has no chat_template and "
                 "no vendored template is configured",
             )
-        return render_prompt_runtime(self.model_cfg, messages, str(template_str))
+        return render_prompt_runtime(self.model_cfg, messages, str(template_str), bos_fallback=bos_fallback)
 
     def close(self) -> None:
         self._bundle = None

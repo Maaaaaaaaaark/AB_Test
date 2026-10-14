@@ -73,7 +73,15 @@ def _render_template_task(item: Dict[str, Any], cfg: ConfigBundle) -> str:
     # Plain .replace, NOT str.format: task instructions contain LaTeX braces
     # (e.g. \\boxed{}) that format() would treat as fields.
     if item["task"] == "gsm8k":
-        return task.instruction.replace("{question}", item["question"])
+        text = task.instruction
+        ex = getattr(task, "exemplar", None)
+        if ex:
+            text = text.replace("{exemplar_question}", str(ex["question"])).replace(
+                "{exemplar_answer}", str(ex["answer"])
+            )
+        elif "{exemplar_" in text:
+            raise ValueError("gsm8k instruction references an exemplar but none is configured")
+        return text.replace("{question}", item["question"])
     if item["task"] == "math":
         return task.instruction.replace("{problem}", item["problem"])
     if item["task"] == "hotpotqa":

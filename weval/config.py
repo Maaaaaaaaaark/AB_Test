@@ -62,6 +62,12 @@ class ModelCfg:
     template_sha256: Optional[str] = None
     context_limit_source: str = "model_config.max_position_embeddings"
     param_exclusions: List[str] = field(default_factory=list)
+    # Declared end-of-turn / end-of-sequence strings the model can emit when
+    # it stops (e.g. Gemma's "<end_of_turn>", which is NOT tokenizer.eos_token).
+    # Used only to trim TRAILING stop strings before parsing; merged with the
+    # stop strings recorded at generation time, so re-scoring old records is
+    # also correct.
+    stop_strings: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -78,6 +84,9 @@ class TaskCfg:
     relaxed_parser: Optional[str] = None
     relation_note: Optional[str] = None
     answer_format: Optional[str] = None
+    # Optional fixed worked example rendered into the instruction through
+    # {exemplar_question} / {exemplar_answer} (GSM8K format demonstration).
+    exemplar: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -99,6 +108,8 @@ class PlanCfg:
     max_attempts_per_item: int
     deadline_seconds: float
     report_incomplete_on_unresolved: bool
+    # MuSiQue positives must be human-approved (positive review) to run.
+    require_approved_positives: bool = False
 
 
 @dataclass
@@ -177,6 +188,7 @@ def load_configs(root: Path) -> ConfigBundle:
             max_attempts_per_item=int(raw.get("max_attempts_per_item", 3)),
             deadline_seconds=float(raw.get("deadline_seconds", 3600)),
             report_incomplete_on_unresolved=bool(raw.get("report_incomplete_on_unresolved", True)),
+            require_approved_positives=bool(raw.get("require_approved_positives", False)),
         )
 
     bundle = ConfigBundle(

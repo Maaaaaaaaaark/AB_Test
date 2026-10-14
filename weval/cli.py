@@ -199,12 +199,16 @@ def cmd_review(args: argparse.Namespace) -> int:
         print_summary(path, args.only)
         return 0
     try:
-        entry = apply_decision(path, args.parent, args.action, note=args.note)
+        entry = apply_decision(path, args.parent, args.action, note=args.note, target=args.target)
     except ReviewError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
-    print(f"{args.parent}: {entry['review_status']} "
-          f"(human_reviewed={entry.get('human_reviewed')})")
+    if args.target == "positive":
+        print(f"{args.parent} [positive]: {entry.get('positive_review_status')} "
+              f"(human_reviewed={entry.get('positive_human_reviewed')})")
+    else:
+        print(f"{args.parent} [negative]: {entry['review_status']} "
+              f"(human_reviewed={entry.get('human_reviewed')})")
     return 0
 
 
@@ -296,9 +300,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--plan", default="pilot", choices=["smoke", "pilot"])
     sp.set_defaults(func=cmd_worked_examples)
 
-    sp = sub.add_parser("review", help="human review of paired negatives")
+    sp = sub.add_parser("review", help="human review of MuSiQue positives and paired negatives")
     sp.add_argument("action", choices=["list", "approve", "exclude", "reset"])
     sp.add_argument("--parent", default=None, help="parent record id (required for approve/exclude/reset)")
+    sp.add_argument("--target", default="negative", choices=["negative", "positive"],
+                    help="which item of the parent the decision applies to (default: negative)")
     sp.add_argument("--note", default=None, help="reason (required for exclude; recorded verbatim)")
     sp.add_argument("--only", default=None, choices=["proposed", "approved", "excluded"])
     sp.set_defaults(func=cmd_review)

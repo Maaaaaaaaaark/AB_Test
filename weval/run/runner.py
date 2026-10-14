@@ -35,7 +35,7 @@ from .eligibility import check_context_fits
 from .manifests import manifest_items_for_task
 from .store import PREDICTION_RECORD_VERSION, PredictionStore, record_fingerprints
 
-RUNNER_VERSION = "runner-v1"
+RUNNER_VERSION = "runner-v2"
 
 
 class PlanGateError(RuntimeError):
@@ -158,6 +158,9 @@ def run_plan(
             for task in plan.tasks:
                 task_cfg = cfg.task(task)
                 items = items_for(task)
+                runnable_items = items
+                n_skipped_unapproved = 0
+                n_skipped_unapproved_pos = 0
                 if plan.require_approved_negatives:
                     proposed = [
                         it for it in items
@@ -177,20 +180,41 @@ def run_plan(
                             f"approved={len(approved)}, unapproved={len(proposed)}. "
                             "Finish review and rebuild manifests before running."
                         )
+                    before = len(runnable_items)
                     runnable_items = [
-                        it for it in items
+                        it for it in runnable_items
                         if not (it.get("kind") == "negative" and it.get("review_status") != "approved")
                     ]
-                    n_skipped_unapproved = len(items) - len(runnable_items)
-                else:
-                    runnable_items = items
-                    n_skipped_unapproved = 0
+                    n_skipped_unapproved = before - len(runnable_items)
+                if plan.require_approved_positives and task == "musique_local":
+                    proposed_pos = [
+                        it for it in items
+                        if it.get("kind") == "positive" and it.get("review_status") != "approved"
+                    ]
+                    approved_pos = [
+                        it for it in items
+                        if it.get("kind") == "positive" and it.get("review_status") == "approved"
+                    ]
+                    if plan_name in {"selection", "holdout"} and (proposed_pos or not approved_pos):
+                        raise PlanGateError(
+                            f"{plan_name}/{task}: approved-positive gate failed: "
+                            f"approved={len(approved_pos)}, unapproved={len(proposed_pos)}. "
+                            "Review positives (weval review ... --target positive) and "
+                            "rebuild manifests before running."
+                        )
+                    before = len(runnable_items)
+                    runnable_items = [
+                        it for it in runnable_items
+                        if not (it.get("kind") == "positive" and it.get("review_status") != "approved")
+                    ]
+                    n_skipped_unapproved_pos = before - len(runnable_items)
                 parser_version = PARSER_VERSIONS.get(task_cfg.parser, "unknown")
                 scorer_version = SCORER_VERSIONS.get(task_cfg.scorer, "unknown")
                 for seed in seeds:
                     counters = {
                         "completed": 0, "reused": 0, "excluded_context": 0,
                         "infra_failed": 0, "skipped_unapproved_negatives": 0,
+                        "skipped_unapproved_positives": 0,
                         "n_tokens_in": 0, "n_tokens_out": 0, "elapsed_seconds": 0.0,
                     }
                     t_seed_start = time.monotonic()
@@ -321,12 +345,14 @@ def run_plan(
                             )
                     counters["elapsed_seconds"] = round(time.monotonic() - t_seed_start, 1)
                     counters["skipped_unapproved_negatives"] = n_skipped_unapproved
+                    counters["skipped_unapproved_positives"] = n_skipped_unapproved_pos
                     store.save_status(config_name, task, seed, counters)
                     store.log(
                         config_name, task,
                         f"[s{seed}] DONE: completed={counters['completed']} reused={counters['reused']} "
                         f"excluded_context={counters['excluded_context']} infra_failed={counters['infra_failed']} "
                         f"skipped_unapproved_negatives={counters['skipped_unapproved_negatives']} "
+                        f"skipped_unapproved_positives={counters['skipped_unapproved_positives']} "
                         f"tokens_in={counters['n_tokens_in']} tokens_out={counters['n_tokens_out']} "
                         f"elapsed={counters['elapsed_seconds']}s",
                     )
@@ -334,6 +360,7 @@ def run_plan(
                     "seeds": seeds,
                     "n_items": len(items),
                     "n_skipped_unapproved_negatives": n_skipped_unapproved,
+                    "n_skipped_unapproved_positives": n_skipped_unapproved_pos,
                 }
         finally:
             backend.close()

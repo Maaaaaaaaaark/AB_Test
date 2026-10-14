@@ -77,7 +77,7 @@ def _render_example_section(
     if item.get("alias_source"):
         lines.append(f"- gold alias source: {item['alias_source']}")
     lines.append("")
-    lines.append("Prompt the model sees (after chat-template application):")
+    lines.append("User message (before the model's chat template; each prediction below shows the start of the templated prompt):")
     lines.append("")
     lines.append("```text")
     lines.append(rendered.user_message)
@@ -115,6 +115,13 @@ def _render_example_section(
             lines.append(f"##### Prediction: `{rec.get('config')}` (seed {rec.get('seed')})")
             lines.append("")
             lines.append(f"Generation record: `{pred.relative_to(out_dir)}`")
+            lines.append("")
+            prompt_text = rec.get("prompt_text") or ""
+            ids = rec.get("prompt_token_ids") or []
+            bos = ((rec.get("template") or {}).get("bos") or {})
+            lines.append(f"- templated prompt starts with: `{prompt_text[:80]!r}`")
+            lines.append(f"- first prompt token ids: {ids[:3]}; BOS check: {bos.get('bos_check', 'not recorded')}")
+            lines.append(f"- stop strings trimmed before parsing: {rec.get('eos_token_strings')}")
             lines.append("")
             lines.append("```text")
             lines.append(rec.get("output_text", "<no output_text>"))

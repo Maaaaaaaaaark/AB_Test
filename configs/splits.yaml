@@ -36,6 +36,9 @@ seeds:
 split_seeds:
   musique_subquestion_choice: 20261013
   musique_parent_order: 20261013
+  # per-item distractor sample + presentation order of the 5 visible
+  # MuSiQue paragraphs (builder v2; v1 used idx order -> support ~always last)
+  musique_paragraph_order: 20261013
   processbench_group_order: 20261013
   reference_subset_order: 20261013
 

@@ -95,11 +95,15 @@ def build_musique_splits(
     pools = musique_adapter.split_parents(records, cfg)
     stages = cfg.splits["stages"]
     seed = cfg.splits["split_seeds"]["musique_subquestion_choice"]
+    order_seed = int(cfg.splits["split_seeds"].get(
+        "musique_paragraph_order", musique_adapter.DEFAULT_PARAGRAPH_ORDER_SEED
+    ))
     review_path = out_dir / "manifests" / "musique_negative_review.json"
-    # Full entry map (not just approved): build_musique applies the status
-    # rules itself, so human-excluded pairs are reported as review:
+    # Full entry maps (not just approved): build_musique applies the status
+    # rules itself, so human-excluded pairs/positives are reported as review
     # exclusions instead of silently disappearing.
     review_map = musique_adapter.load_review_map(review_path)  # empty on first build
+    positive_review_map = musique_adapter.load_positive_review_map(review_path)
 
     review_pool_parents: List[Dict[str, Any]] = []
     review_positives: Dict[str, musique_adapter.MusiqueItem] = {}
@@ -117,6 +121,8 @@ def build_musique_splits(
             parent_records, split, seed,
             parent_ids=[r["id"] for r in parent_records],
             approved_pairs=review_map,
+            order_seed=order_seed,
+            positive_reviews=positive_review_map,
         )
         return {"items": items, "report": report, "pair_exclusions": pair_exclusions, "src": src}
 
@@ -135,32 +141,36 @@ def build_musique_splits(
         _write_json(path, manifest)
         res.manifests[f"musique_{split_name}"] = path
 
-    # Review file covers: pilot parents (first N debug parents), all selection
-    # and all holdout parents. Unreviewed smoke pairs stay development-only.
+    # Review file covers: pilot parents (first N eligible debug parents), all
+    # eligible selection and holdout parents. It is written from the build
+    # CANDIDATES (independent of any decision), so a human exclusion never
+    # makes an entry - or its decision - disappear on the next rebuild.
+    # Unreviewed smoke pairs stay development-only.
     pilot_n = stages["pilot"]["musique_parents"]
-    blob = per_split["debug"]
-    seen_debug = 0
-    for i in blob["items"]:
-        if i.kind != "positive" or seen_debug >= pilot_n:
-            continue
-        seen_debug += 1
-        record = next(r for r in blob["src"] if r["id"] == i.parent_id)
-        review_pool_parents.append(record)
-        review_positives[i.parent_id] = i
-        neg = next((x for x in blob["items"] if x.kind == "negative" and x.pair_id == i.pair_id), None)
-        review_negatives[i.parent_id] = neg
-        review_exclusions[i.parent_id] = blob["pair_exclusions"].get(i.parent_id)
-    for split_name in ("selection", "holdout"):
-        blob = per_split[split_name]
-        for i in blob["items"]:
-            if i.kind != "positive":
+
+    def _add_candidates(parent_ids: List[str], src: List[Dict[str, Any]], split: str, limit: Optional[int]) -> None:
+        by_id = {r["id"]: r for r in src}
+        n_added = 0
+        for pid in parent_ids:
+            if limit is not None and n_added >= limit:
+                break
+            record = by_id.get(pid)
+            if record is None:
                 continue
-            record = next(r for r in blob["src"] if r["id"] == i.parent_id)
+            subq, _eligible = musique_adapter.choose_subquestion(record, seed)
+            if subq < 0:
+                continue
+            pos = musique_adapter.build_positive(record, subq, split, order_seed=order_seed)
+            neg, reason = musique_adapter.build_pair(record, subq, pos, split)
             review_pool_parents.append(record)
-            review_positives[i.parent_id] = i
-            neg = next((x for x in blob["items"] if x.kind == "negative" and x.pair_id == i.pair_id), None)
-            review_negatives[i.parent_id] = neg
-            review_exclusions[i.parent_id] = blob["pair_exclusions"].get(i.parent_id)
+            review_positives[pid] = pos
+            review_negatives[pid] = neg
+            review_exclusions[pid] = reason
+            n_added += 1
+
+    _add_candidates(pools["debug"], records.get("train", []), "debug", pilot_n)
+    _add_candidates(pools["selection"][: stages["selection"]["musique_parents"]], records["dev"], "selection", None)
+    _add_candidates(pools["holdout"][: stages["holdout"]["musique_parents"]], records["dev"], "holdout", None)
 
     n_cand = musique_adapter.write_review_file(
         review_path, review_pool_parents, review_positives, review_negatives, review_exclusions
@@ -258,11 +268,21 @@ def build_references(
             i for i, r in enumerate(gsm_records)
             if _normalized_q(r["question"]) in local_problems.get("gsm8k", set())
         }
+        # The prompt's fixed worked example (a TRAIN question) must never be
+        # an evaluation item; identical test questions are excluded too.
+        exemplar = getattr(cfg.task("gsm8k"), "exemplar", None) if "gsm8k" in cfg.tasks else None
+        n_exemplar_overlap = 0
+        if exemplar:
+            ex_q = _normalized_q(str(exemplar["question"]))
+            overlap = {i for i, r in enumerate(gsm_records) if _normalized_q(r["question"]) == ex_q}
+            n_exemplar_overlap = len(overlap)
+            gsm_excluded |= overlap
         res.coverage["gsm8k_reference"] = _frozen_reference(
             "gsm8k", cfg, out_dir, provenance.get("gsm8k"), gsm_records,
             lambda recs, split: gsm8k_adapter.build_items(recs, split),
             len(gsm_records), gsm_excluded, lambda r, i: str(r.get("id") or i)
         )
+        res.coverage["gsm8k_reference"]["n_exemplar_overlap_excluded"] = n_exemplar_overlap
         res.manifests["gsm8k_reference"] = Path(res.coverage["gsm8k_reference"]["manifest"])
         res.manifests["gsm8k_reference_pilot"] = Path(res.coverage["gsm8k_reference"]["pilot_manifest"])
     except Exception as e:  # noqa: BLE001

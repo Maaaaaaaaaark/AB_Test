@@ -24,7 +24,7 @@ from typing import Any, Dict, List
 from ..parsing.base import ParsedAnswer
 from .base import ScoreRecord, unscorable
 
-MUSIQUE_SCORER_VERSION = "musique-em-f1-v2"
+MUSIQUE_SCORER_VERSION = "musique-em-f1-v3"
 
 # Vendored official MuSiQue answer metric (verbatim). The vendored files
 # import each other with absolute paths (metrics.metric), so BOTH the vendor
@@ -57,6 +57,7 @@ def score_musique(item: Dict[str, Any], parsed: ParsedAnswer) -> ScoreRecord:
                     "correct_abstention": True,
                     "false_answer": False,
                     "predicted_answer": parsed.value,
+                    "answer_source": parsed.diagnostics.get("answer_source"),
                     "scorer_version": MUSIQUE_SCORER_VERSION,
                 },
             )
@@ -72,8 +73,11 @@ def score_musique(item: Dict[str, Any], parsed: ParsedAnswer) -> ScoreRecord:
                 "kind": "negative",
                 "abstained": False,
                 "correct_abstention": False,
+                # anything but an exact NOT FOUND fails a negative (including
+                # missing and invalid-format replies; see the status field)
                 "false_answer": True,
                 "predicted_answer": parsed.value,
+                "answer_source": parsed.diagnostics.get("answer_source"),
                 "scorer_version": MUSIQUE_SCORER_VERSION,
             },
         )
@@ -102,10 +106,11 @@ def score_musique(item: Dict[str, Any], parsed: ParsedAnswer) -> ScoreRecord:
                 "em": 0,
                 "f1": 0.0,
                 "predicted_answer": parsed.value,
+                "answer_source": parsed.diagnostics.get("answer_source"),
                 "scorer_version": MUSIQUE_SCORER_VERSION,
             },
         )
-    if parsed.status == "missing_final":
+    if parsed.status in ("missing_final", "invalid_format"):
         return ScoreRecord(
             item_id=item["item_id"],
             group_id=item["group_id"],
@@ -113,7 +118,7 @@ def score_musique(item: Dict[str, Any], parsed: ParsedAnswer) -> ScoreRecord:
             split=item["split"],
             scorer="musique_em_f1",
             value=0.0,
-            status="missing_final",
+            status=parsed.status,
             detail={
                 "kind": "positive",
                 "abstained": False,
@@ -145,6 +150,7 @@ def score_musique(item: Dict[str, Any], parsed: ParsedAnswer) -> ScoreRecord:
             "f1": f1,
             "is_correct": bool(em),
             "predicted_answer": pred,
+            "answer_source": parsed.diagnostics.get("answer_source"),
             "scorer_version": MUSIQUE_SCORER_VERSION,
         },
     )

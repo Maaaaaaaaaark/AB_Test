@@ -77,10 +77,15 @@ def render_markdown(report: ReportData) -> str:
                     lines.append(f"| {label} | {_ci_cell(metrics.get(key))} | - |")
                 rn = metrics.get("relation_vs_natural") or {}
                 lines.append("")
-                lines.append(f"- positives: {metrics.get('n_positives')}, reviewed negatives: {metrics.get('n_negatives_reviewed')}, "
+                lines.append(f"- positives: {metrics.get('n_positives')} (reviewed {metrics.get('n_positives_reviewed')}, "
+                             f"unreviewed dev only {metrics.get('n_positives_unreviewed_dev_only')}), "
+                             f"reviewed negatives: {metrics.get('n_negatives_reviewed')}, "
                              f"unreviewed negatives (dev only): {metrics.get('n_negatives_unreviewed_dev_only')}")
                 lines.append(f"- relation questions: n={rn.get('relation', {}).get('n')}, mean F1={_fmt(rn.get('relation', {}).get('mean_f1'), 3)}; "
                              f"natural questions: n={rn.get('natural', {}).get('n')}, mean F1={_fmt(rn.get('natural', {}).get('mean_f1'), 3)}")
+                af = metrics.get("answer_format") or {}
+                lines.append(f"- answer format: Answer-line={af.get('answer_line')}, single-line={af.get('single_line')}, "
+                             f"invalid format={af.get('invalid_format')}, missing final={af.get('missing_final')}")
             elif task == "processbench":
                 lines.append("| subset | error acc | correct acc | F1 | n_error | n_correct | format errors | missing final | length stops |")
                 lines.append("|---|---|---|---|---|---|---|---|---|")
@@ -110,6 +115,11 @@ def render_markdown(report: ReportData) -> str:
                 if task == "math":
                     lines.append(f"| unscorable (gold missing boxed) | {metrics.get('n_unscorable_gold_missing')} | - |")
                     lines.append(f"| missing final answer (open region / no boxed) | {metrics.get('n_missing_final')} | - |")
+                if task == "hotpotqa":
+                    af = metrics.get("answer_format") or {}
+                    lines.append(f"| answer format: Answer-line / single-line / invalid / missing | "
+                                 f"{af.get('answer_line')} / {af.get('single_line')} / "
+                                 f"{af.get('invalid_format')} / {af.get('missing_final')} | - |")
             per_seed = metrics.get("per_seed") or {}
             if per_seed:
                 lines.append("")

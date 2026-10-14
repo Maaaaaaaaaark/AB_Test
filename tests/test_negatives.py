@@ -20,8 +20,10 @@ from weval.datasets.musique import (
     build_musique,
     build_pair,
     build_positive,
+    item_content_fingerprint,
     load_approved_pairs,
     non_supporting_anywhere,
+    paragraph_plan,
     write_review_file,
 )
 from weval.prompts.renderers import render_item
@@ -41,25 +43,26 @@ def _non_paragraph_lines(user_message: str) -> List[str]:
     return [ln for ln in user_message.splitlines() if not ln.startswith("Paragraph ")]
 
 
-def _paragraphs(replacement: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Default 8-paragraph layout with a custom fifth non-supporting paragraph."""
-    return [
-        {"idx": 0, "title": "Paris", "paragraph_text": "Paris is the capital of France.", "is_supporting": True},
-        {"idx": 1, "title": "Paris population", "paragraph_text": "Paris has a population of 2.1 million.", "is_supporting": True},
-        {"idx": 2, "title": "London", "paragraph_text": "London is the capital of England.", "is_supporting": False},
-        {"idx": 3, "title": "Rome", "paragraph_text": "Rome is the capital of Italy.", "is_supporting": False},
-        {"idx": 4, "title": "Berlin", "paragraph_text": "Berlin is the capital of Germany.", "is_supporting": False},
-        {"idx": 5, "title": "Madrid", "paragraph_text": "Madrid is the capital of Spain.", "is_supporting": False},
-        replacement,
-        {"idx": 7, "title": "Beijing", "paragraph_text": "Beijing is the capital of China.", "is_supporting": False},
-    ]
+def _with_replacement(record: Dict[str, Any], title: str, text: str, subq: int = 1) -> Dict[str, Any]:
+    """Overwrite the paragraph that the SEEDED plan picks as the negative's
+    replacement (builder v2 samples it; it is no longer always the 5th by idx).
+    The plan depends only on parent id, subquestion and pool membership, so
+    editing that paragraph's content keeps the plan unchanged."""
+    plan = paragraph_plan(record, subq)
+    for p in record["paragraphs"]:
+        if p["idx"] == plan["replacement_idx"]:
+            p["title"] = title
+            p["paragraph_text"] = text
+    return record
 
 
 def _four_distractor_paragraphs() -> List[Dict[str, Any]]:
-    """Two supporting + four non-supporting: positive buildable, pair is not."""
+    """Two supporting + four non-supporting: positive buildable, pair is not.
+    (Support paragraphs state the answers: builder v2 requires the gold answer
+    to be visible in the support paragraph for a subquestion to be eligible.)"""
     return [
-        {"idx": 0, "title": "A", "paragraph_text": "A text.", "is_supporting": True},
-        {"idx": 1, "title": "B", "paragraph_text": "B text.", "is_supporting": True},
+        {"idx": 0, "title": "A", "paragraph_text": "Paris is the capital of France.", "is_supporting": True},
+        {"idx": 1, "title": "B", "paragraph_text": "Paris has a population of 2.1 million.", "is_supporting": True},
         {"idx": 2, "title": "C", "paragraph_text": "C text.", "is_supporting": False},
         {"idx": 3, "title": "D", "paragraph_text": "D text.", "is_supporting": False},
         {"idx": 4, "title": "E", "paragraph_text": "E text.", "is_supporting": False},
@@ -101,8 +104,8 @@ class TestPairConstruction:
         neg, reason = build_pair(record, 1, pos, SPLIT)
         assert neg is not None and reason is None
 
-        pool = non_supporting_anywhere(record)
-        fifth = sorted(pool, key=lambda p: p["idx"])[4]
+        pool = {p["idx"]: p for p in non_supporting_anywhere(record)}
+        fifth = pool[pos.gold["paragraph_plan"]["replacement_idx"]]
         supp_idx = record["question_decomposition"][1]["paragraph_support_idx"]
         supp = next(p for p in record["paragraphs"] if p["idx"] == supp_idx)
 
@@ -143,9 +146,10 @@ class TestPairConstruction:
         assert neg.excluded_reason is None
         assert neg.reference_answers == pos.reference_answers
         assert neg.syntax == pos.syntax
-        assert neg.gold["replaced_with_paragraph_idx"] == sorted(
+        assert neg.gold["replaced_with_paragraph_idx"] == pos.gold["paragraph_plan"]["replacement_idx"]
+        assert neg.gold["replaced_with_paragraph_idx"] in {
             p["idx"] for p in non_supporting_anywhere(record)
-        )[4]
+        } - set(pos.gold["paragraph_plan"]["distractor_idxs"])
         assert neg.gold["support_paragraph_idx"] == record["question_decomposition"][1][
             "paragraph_support_idx"
         ]
@@ -158,24 +162,20 @@ class TestScreening:
         return build_pair(record, subq, pos, SPLIT)
 
     def test_gold_answer_in_replacement_title_excluded(self):
-        record = musique_record(paragraphs=_paragraphs(
-            {"idx": 6, "title": "2.1 million residents", "paragraph_text": "Many people live in the metro area.", "is_supporting": False},
-        ))
+        record = _with_replacement(musique_record(), "2.1 million residents", "Many people live in the metro area.")
         neg, reason = self._pair(record)
         assert neg is None
         assert reason == "answer_visible_in_title"
 
     def test_subanswer_in_replacement_text_excluded(self):
         # Terminal normalization mismatch -> gold is the canonical subanswer.
-        record = musique_record(paragraphs=_paragraphs(
-            {"idx": 6, "title": "Demographics", "paragraph_text": "The city has 2.1 million residents.", "is_supporting": False},
-        ))
+        record = _with_replacement(musique_record(), "Demographics", "The city has 2.1 million residents.")
         neg, reason = self._pair(record)
         assert neg is None
         assert reason == "answer_visible_in_paragraph"
 
     def test_parent_alias_in_replacement_text_excluded(self):
-        record = musique_record(
+        record = _with_replacement(musique_record(
             pid="2hop__alias",
             answer="Paris",
             aliases=["City of Light"],
@@ -183,10 +183,7 @@ class TestScreening:
                 {"id": 1, "question": "Which city?", "answer": "Paris", "paragraph_support_idx": 0},
                 {"id": 2, "question": "Which city is the capital of France?", "answer": "Paris", "paragraph_support_idx": 1},
             ],
-            paragraphs=_paragraphs(
-                {"idx": 6, "title": "Tourism", "paragraph_text": "The City of Light attracts many visitors.", "is_supporting": False},
-            ),
-        )
+        ), "Tourism", "The City of Light attracts many visitors.")
         neg, reason = self._pair(record)
         assert neg is None
         assert reason == "answer_visible_in_paragraph"
@@ -229,9 +226,7 @@ class TestScreening:
         assert reason == "numeric_answer_policy"
 
     def test_screening_failure_recorded_in_build_report(self):
-        record = musique_record(paragraphs=_paragraphs(
-            {"idx": 6, "title": "2.1 million residents", "paragraph_text": "Many people live in the metro area.", "is_supporting": False},
-        ))
+        record = _with_replacement(musique_record(), "2.1 million residents", "Many people live in the metro area.")
         items, report, pair_exclusions = build_musique([record], SPLIT, SEED)
         assert pair_exclusions[record["id"]] == "answer_visible_in_title"
         assert report.exclusions.get("answer_visible_in_title") == 1
@@ -355,10 +350,16 @@ class TestApprovalReentry:
         a full entry map to pin its accounting behavior.
         """
         rec = musique_record(pid="2hop__pair_x")
+        pos = build_positive(rec, 1, SPLIT)
+        neg, _ = build_pair(rec, 1, pos, SPLIT)
         items, report, pair_exclusions = build_musique(
             [rec], SPLIT, SEED, require_approved=True,
             approved_pairs={
-                f"{rec['id']}:s1:neg": {"review_status": "excluded", "excluded_reason": "reviewer said no"},
+                f"{rec['id']}:s1:neg": {
+                    "review_status": "excluded", "excluded_reason": "reviewer said no",
+                    # decisions are honored only for the content they were made on
+                    "negative_fingerprint": item_content_fingerprint(neg),
+                },
             },
         )
         assert [i for i in items if i.kind == "negative"] == []

@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import ConfigBundle, PlanCfg
 from ..parsing import PARSERS, PARSER_VERSIONS
+from ..parsing.reasoning import merge_stop_strings
 from ..run.manifests import manifest_items_for_task
 from ..run.store import PredictionStore
 from ..scoring import SCORERS, SCORER_VERSIONS
@@ -40,7 +41,23 @@ from .stats import (
     paired_difference,
 )
 
-REPORT_VERSION = "report-v2"
+REPORT_VERSION = "report-v3"
+
+
+def _answer_format_counts(records: List[Dict[str, Any]]) -> Dict[str, int]:
+    """How the short answer was obtained (free-text QA tasks): an explicit
+    "Answer:" line, a single-line reply, or a failure (invalid format = no
+    extractable answer; missing final = reasoning never closed / empty)."""
+    out = {"answer_line": 0, "single_line": 0, "invalid_format": 0, "missing_final": 0}
+    for r in records:
+        st = r.get("status")
+        if st in ("invalid_format", "missing_final"):
+            out[st] += 1
+            continue
+        src = (r.get("detail") or {}).get("answer_source")
+        if src in out:
+            out[src] += 1
+    return out
 
 
 @dataclass
@@ -118,13 +135,21 @@ def _load_unresolved(store_dir: Path, config: str, task: str, seeds: List[int]) 
 
 
 def _parse_and_score(
-    task_cfg, model_reasoning_mode: str, item: Dict[str, Any], record: Dict[str, Any]
+    task_cfg,
+    model_reasoning_mode: str,
+    item: Dict[str, Any],
+    record: Dict[str, Any],
+    declared_stop_strings: Optional[List[str]] = None,
 ) -> Tuple[Any, Any]:
     parser = PARSERS[task_cfg.parser]
+    # Stop strings recorded at generation time MERGED with the model
+    # configuration's declared stop strings: records produced before a stop
+    # string was known (e.g. Gemma's <end_of_turn>) are re-scored correctly.
+    stops = merge_stop_strings(record.get("eos_token_strings"), declared_stop_strings)
     parsed = parser(
         record["output_text"],
         model_reasoning_mode,
-        record.get("eos_token_strings"),
+        stops,
     )
     scorer = SCORERS[task_cfg.scorer]
     score = scorer(item, parsed)
@@ -142,12 +167,17 @@ def _aggregate_musique(cfg: ConfigBundle, records: List[Dict[str, Any]], items_b
     relation_f1: List[float] = []
     natural_f1: List[float] = []
     n_pos = n_neg_reviewed = n_neg_unreviewed = 0
+    n_pos_reviewed = n_pos_unreviewed = 0
 
     for r in records:
         item = items_by_id.get(r["item_id"])
         if item is None or item.get("kind") != "positive":
             continue
         n_pos += 1
+        if item.get("review_status") == "approved":
+            n_pos_reviewed += 1
+        else:
+            n_pos_unreviewed += 1
         g = r["group_id"]
         d = r["detail"]
         pos_all_f1.setdefault(g, []).append(float(r["value"]))
@@ -175,8 +205,15 @@ def _aggregate_musique(cfg: ConfigBundle, records: List[Dict[str, Any]], items_b
     def _ci(values_by_group: Dict[str, List[float]]) -> BootstrapCI:
         return group_bootstrap(values_by_group, n_boot=n_boot)
 
+    known = [r for r in records if items_by_id.get(r["item_id"]) is not None]
     return {
+        "answer_format": _answer_format_counts(known),
         "n_positives": n_pos,
+        # Positives are human-reviewed (support paragraph really answers the
+        # question). Formal stages run approved positives only; smoke may
+        # include unreviewed ones, which support no qualification claim.
+        "n_positives_reviewed": n_pos_reviewed,
+        "n_positives_unreviewed_dev_only": n_pos_unreviewed,
         "n_negatives_reviewed": n_neg_reviewed,
         "n_negatives_unreviewed_dev_only": n_neg_unreviewed,
         "answerable_f1": _ci(pos_by_group).to_dict(),
@@ -285,6 +322,8 @@ def _aggregate_simple(task: str, records: List[Dict[str, Any]], n_boot: int = N_
             "n_unscorable_gold_missing": sum(1 for r in records if r.get("status") == "unscorable"),
             "n_missing_final": sum(1 for r in records if r.get("status") == "missing_final"),
         }
+    elif task == "hotpotqa":
+        extra = {"n": len(records), "answer_format": _answer_format_counts(records)}
     else:
         extra = {"n": len(records)}
     for r in records:
@@ -336,6 +375,12 @@ def build_report(
                     and it.get("kind") == "negative"
                     and it.get("review_status") != "approved"
                 )
+                and not (
+                    plan.require_approved_positives
+                    and task == "musique_local"
+                    and it.get("kind") == "positive"
+                    and it.get("review_status") != "approved"
+                )
             ]
             items_by_id = {it["item_id"]: it for it in items}
             all_records = _load_all_records(store_dir, config_name, task, seeds)
@@ -356,7 +401,9 @@ def build_report(
                 if item is None:
                     continue
                 try:
-                    _, score = _parse_and_score(task_cfg, model_cfg.reasoning_mode, item, r)
+                    _, score = _parse_and_score(
+                        task_cfg, model_cfg.reasoning_mode, item, r, model_cfg.stop_strings
+                    )
                 except Exception as e:  # noqa: BLE001 - a broken parser must not kill the report
                     report.notes.append(f"parse/score error for {config_name}/{task}/{r['item_id']}: {e}")
                     n_parse_errors += 1

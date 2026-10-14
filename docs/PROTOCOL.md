@@ -38,17 +38,23 @@ Vendored sources (see `vendor/VENDORED.md` for exact revision pins):
    non-supporting paragraphs of the same original example. Strict rule: a
    paragraph supporting ANY other subquestion of the same parent is never used
    as a distractor (it would leak intermediate evidence). Parents with an
-   insufficient pool are excluded and counted.
+   insufficient pool are excluded and counted. The four distractors are a
+   **seeded sample** of that pool and the five paragraphs are shown in a
+   **seeded random order** (`split_seeds.musique_paragraph_order`, per item,
+   recorded in `gold.paragraph_plan`). Builder v1 took the four lowest-idx
+   distractors in idx order, which put the support paragraph in the last slot
+   almost always; the support-slot distribution is now reported per build.
 4. *Abstention as a first-class label:* the instruction requires the model to
    answer or output exactly `NOT FOUND`. A positive item answered with
    NOT FOUND is a false abstention (scored 0, flagged); a negative item
-   answered with exactly NOT FOUND scores 1.
+   answered with exactly NOT FOUND scores 1. The answer is extracted with the
+   shared answer-line rule (see "Short-answer extraction" below).
 5. *Gold for positives:* the subquestion's canonical answer, plus the parent
    answer and parent aliases at the terminal step (aliases are used only when
    the canonical subanswer equals the parent answer under official
    normalization; the alias source is recorded per item).
 6. *Paired negatives (project-constructed):* the supporting paragraph is
-   replaced by a 5th non-supporting paragraph at the same slot; the
+   replaced by a 5th (seeded) non-supporting paragraph at the same slot; the
    instruction is identical ("output exactly NOT FOUND" is the only expected
    answer). Built pairs are screened for answer/alias leakage (into titles,
    paragraph text, or prerequisite answers). Ambiguous yes/no and numeric
@@ -59,6 +65,23 @@ Vendored sources (see `vendor/VENDORED.md` for exact revision pins):
    build, but `human_reviewed` entries keep their decision fields), and
    human-excluded pairs are reported as `review:<reason>` exclusions in the
    build coverage instead of silently disappearing.
+
+7. *Positive screening and review (project-defined).* A subquestion is
+   eligible only if one of its gold answers appears literally in its support
+   paragraph (title or text). This is necessary, not sufficient: the first
+   smoke run showed positives whose support paragraph mentions the answer
+   string without stating the asked relation, and positives whose paragraph
+   never names the entity in the question. Every positive is therefore
+   human-reviewed ("does the support paragraph, read on its own, answer the
+   resolved question with the gold answer?"); pilot, selection and holdout
+   run **approved positives only** (`require_approved_positives`). Without
+   this, false-abstention would penalize models that stay faithful to the
+   paragraphs and reward answering from memory.
+8. *Review decisions are bound to content.* Each decision (positive and
+   negative separately) stores a fingerprint of the item it was made on
+   (question, gold, visible paragraphs in order). A rebuild that changes the
+   item drops the decision into `stale_decisions` and the item returns to
+   `proposed`.
 
 ## ProcessBench
 
@@ -102,9 +125,12 @@ Vendored sources (see `vendor/VENDORED.md` for exact revision pins):
 `####` answers.
 
 **Project-defined:**
-1. *Instruction* (custom): "put your final numeric answer on a line by itself
-   in the format `#### <number>`" - the `####` format is required by the
-   official extractor.
+1. *Instruction* (custom) with **one fixed worked example** in the official
+   `#### <number>` format (GSM8K main train, first record, calculator
+   annotations removed; any identical test question is excluded at build).
+   In the first smoke run the zero-shot instruction produced 0% official
+   accuracy for every configuration because no model wrote `####`; the
+   example demonstrates the format the official extractor requires.
 2. *Relaxed parser* exists as a secondary diagnostic only (it is reported how
    many official-extraction failures it would rescue); the official
    extraction failure rate is reported as a primary metric. The relaxed
@@ -138,6 +164,20 @@ answer normalization and token F1 vendored from the official evaluation.
 **Project-defined:** answer-only scope - supporting-facts prediction and the
 joint EM/F1 are not part of this project, so only the answer metrics are
 computed (the vendored functions are used verbatim for the parts that apply).
+The short answer is extracted with the answer-line rule below (builder v1
+scored the whole reply, so full-sentence answers diluted F1 and EM was 0 for
+every configuration). The official normalization does not map digits to
+number words ("5" vs "five" is a miss); kept as official.
+
+## Short-answer extraction (MuSiQue local, HotpotQA)
+
+The instruction asks for a short answer and, if anything precedes it, a last
+line `Answer: <short answer>`; the prompt ends with an `Answer:` cue.
+From the answer channel (after any reasoning region): (1) the LAST
+`Answer: X` line (markdown decoration tolerated; empty X -> next non-empty
+line); else (2) a single-line reply is the answer; else (3) invalid format:
+no answer is extracted, the item scores 0 and is reported in the
+answer-format counts (Answer-line / single-line / invalid / missing).
 
 ---
 
@@ -159,6 +199,17 @@ computed (the vendored functions are used verbatim for the parts that apply).
   rule); an item that does not fit is recorded as ineligible, never silently
   truncated.
 - Raw token IDs and raw text are stored before any cleanup.
+- BOS: prompts are tokenized with `add_special_tokens=False`, so a template
+  that renders `{{ bos_token }}` (Gemma 3, Llama 3.2, R1-Distill) gets the
+  pinned BOS string (`template_kwargs.bos_token`, tokenizer fallback). The
+  backend asserts that the first prompt token is exactly one BOS and aborts
+  the run otherwise (`PromptContractError`, never retried, never scored).
+  The first smoke run rendered Gemma and Llama prompts without BOS.
+- Stop strings: trailing stop strings are trimmed before parsing. The set is
+  tokenizer `eos_token` + the decoded `generation_config.eos_token_id`s + the
+  declared `stop_strings` in `configs/models.yaml` (Gemma stops on
+  `<end_of_turn>`, which is not its `eos_token`). Re-scoring merges the
+  declared strings in, so old records are parsed correctly too.
 - Prompt rendering uses the vendored, sha256-pinned native chat template with
   transformers' exact jinja environment (trim/lstrip blocks,
   `keep_trailing_newline=False`, StrictUndefined, `tojson`), and passes

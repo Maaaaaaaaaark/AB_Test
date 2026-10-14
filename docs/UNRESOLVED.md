@@ -58,34 +58,43 @@ user's explicit sign-off, `RESOLVED` = done (kept for the record).
   RESOLVED and remove the "mirror" wording from `weval/cli.py` data-prep output
   if desired.
 
-## 3. Human review of paired negatives (blocks pilot/selection abstention eval)
+## 3. Human review of MuSiQue positives AND paired negatives (blocks pilot/selection/holdout MuSiQue)
 
-- **Status:** OPEN
-- **What is missing:** `artifacts/manifests/musique_negative_review.json` was
-  built with **176 pair candidates**, all `review_status: proposed` (plus 34
-  entries excluded at build time with recorded reasons). No entry is ever
-  auto-approved: approval requires `human_reviewed: true` and the reviewer's
-  decision. Ambiguous yes/no and numeric negatives are excluded by policy at
-  build time (recorded with reasons) and are not among the candidates.
-- **What it blocks:** `pilot`, `selection` and `holdout` plans set
-  `require_approved_negatives: true` - they refuse to run with zero approved
-  pairs. Smoke runs development (unreviewed) pairs and is not blocked.
+- **Status:** OPEN (builder v2 regenerates every item: earlier decisions, if
+  any, no longer match the content and are moved to `stale_decisions`)
+- **What is missing:** every entry of
+  `artifacts/manifests/musique_negative_review.json` now carries two
+  decisions, both starting `proposed`:
+  - negative (`review_status`): with the support paragraph replaced, is the
+    question really unanswerable from the five visible paragraphs?
+  - positive (`positive_review_status`): does the support paragraph, read on
+    its own, answer the resolved question with the gold answer? (Added after
+    the first smoke run: one positive's paragraph mentioned the answer
+    string without stating the relation, another never named the entity.)
+  Each entry shows the support paragraph and the replacement paragraph.
+  No entry is ever auto-approved.
+- **What it blocks:** `pilot`, `selection` and `holdout` set
+  `require_approved_negatives: true` and `require_approved_positives: true`;
+  selection/holdout refuse to run with any unreviewed MuSiQue item, pilot
+  skips unreviewed items (counted). Smoke is not blocked.
 - **To resolve:**
   ```
-  weval review list --only proposed        # inspect candidates
-  weval review approve --parent <id>       # pair is clean: same question,
-                                           #   supporting paragraph replaced,
-                                           #   no answer/alias leakage
+  weval review list --only proposed
+  weval review approve --parent <id>                      # negative
   weval review exclude --parent <id> --note "<why>"
+  weval review approve --parent <id> --target positive    # positive
+  weval review exclude --parent <id> --target positive --note "<why>"
   ```
-  Excluding requires a written note. `reset` returns an entry to `proposed`.
-  Approval is the human's judgment; this tool only records it.
-- After reviewing, run `weval build` again (or re-run the cluster snapshot
-  step): approved pairs re-enter the manifests as `review_status: approved`,
-  human-excluded pairs drop out and are counted as `review:<reason>`
-  exclusions in the build coverage, and **all human decisions survive the
-  rebuild** - the regenerated review file carries decision fields over for
-  every `human_reviewed` entry.
+  Excluding requires a written note. `reset` returns a decision to
+  `proposed`. Approval is the human's judgment; this tool only records it.
+- Start with the 10 pilot parents and record how many positives had to be
+  excluded: that rate decides whether MuSiQue sub-questions are a usable
+  source for the evidence-worker test. Excluded positives reduce N; raise
+  `stages.selection.musique_parents` if you need >= 100 approved positives.
+- After reviewing, run `weval build` again: approved items re-enter the
+  manifests as `review_status: approved`, human-excluded items drop out and
+  are counted (`review:<reason>`, `positive_review:<reason>`), and decisions
+  survive rebuilds as long as the item content is unchanged.
 
 ## 4. No sourced prices -> Cweighted is null
 
