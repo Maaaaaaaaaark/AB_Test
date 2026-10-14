@@ -85,6 +85,7 @@ def render_markdown(report: ReportData) -> str:
                              f"natural questions: n={rn.get('natural', {}).get('n')}, mean F1={_fmt(rn.get('natural', {}).get('mean_f1'), 3)}")
                 af = metrics.get("answer_format") or {}
                 lines.append(f"- answer format: Answer-line={af.get('answer_line')}, single-line={af.get('single_line')}, "
+                             f"inline-marker={af.get('inline_marker')}, "
                              f"invalid format={af.get('invalid_format')}, missing final={af.get('missing_final')}")
             elif task == "processbench":
                 lines.append("| subset | error acc | correct acc | F1 | n_error | n_correct | format errors | missing final | length stops |")
@@ -117,8 +118,8 @@ def render_markdown(report: ReportData) -> str:
                     lines.append(f"| missing final answer (open region / no boxed) | {metrics.get('n_missing_final')} | - |")
                 if task == "hotpotqa":
                     af = metrics.get("answer_format") or {}
-                    lines.append(f"| answer format: Answer-line / single-line / invalid / missing | "
-                                 f"{af.get('answer_line')} / {af.get('single_line')} / "
+                    lines.append(f"| answer format: Answer-line / single-line / inline-marker / invalid / missing | "
+                                 f"{af.get('answer_line')} / {af.get('single_line')} / {af.get('inline_marker')} / "
                                  f"{af.get('invalid_format')} / {af.get('missing_final')} | - |")
             per_seed = metrics.get("per_seed") or {}
             if per_seed:

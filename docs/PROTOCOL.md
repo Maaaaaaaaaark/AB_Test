@@ -47,8 +47,17 @@ Vendored sources (see `vendor/VENDORED.md` for exact revision pins):
 4. *Abstention as a first-class label:* the instruction requires the model to
    answer or output exactly `NOT FOUND`. A positive item answered with
    NOT FOUND is a false abstention (scored 0, flagged); a negative item
-   answered with exactly NOT FOUND scores 1. The answer is extracted with the
+   answered with NOT FOUND scores 1. The answer is extracted with the
    shared answer-line rule (see "Short-answer extraction" below).
+   *NOT FOUND matching (revised after the pilot, frozen before selection):*
+   the extracted answer is lower-cased, `_`/`-` become spaces, surrounding
+   whitespace, quotes, brackets, markdown and punctuation are stripped, and
+   the result must equal exactly `not found`. In the pilot, Qwen3 wrote
+   `NOT_FOUND` on 11 of 14 negative replies and the exact-match rule scored
+   them as answers (abstention 0/7 and 1/7 instead of 6/7 and 6/7). There is
+   still no substring or synonym matching: free-text refusals ("The provided
+   information is insufficient ...") remain answer attempts. Variants are
+   recorded in `diagnostics.not_found_variant`.
 5. *Gold for positives:* the subquestion's canonical answer, plus the parent
    answer and parent aliases at the terminal step (aliases are used only when
    the canonical subanswer equals the parent answer under official
@@ -177,7 +186,17 @@ From the answer channel (after any reasoning region): (1) the LAST
 `Answer: X` line (markdown decoration tolerated; empty X -> next non-empty
 line); else (2) a single-line reply is the answer; else (3) invalid format:
 no answer is extracted, the item scores 0 and is reported in the
-answer-format counts (Answer-line / single-line / invalid / missing).
+answer-format counts (Answer-line / single-line / inline-marker / invalid /
+missing).
+
+*Inline marker (revised after the pilot, frozen before selection):* if the
+extracted text still contains an `Answer:` marker after other text, the text
+after the LAST marker is the answer when it is non-empty, otherwise the text
+before it. In the pilot Gemma wrote `Belgium Answer:` and
+`8 April 2013 Answer: 8 April 2013` (the prompt's trailing `Answer:` cue plus
+the answer-line instruction); scoring the whole line gave EM 1/6 instead of
+4/6. Such replies are counted as `inline_marker` (a format deviation that is
+reported, not hidden).
 
 ---
 

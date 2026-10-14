@@ -16,7 +16,7 @@ from .answer_line import ANSWER_LINE_VERSION, extract_short_answer
 from .base import ParsedAnswer, missing_final
 from .reasoning import split_reasoning
 
-HOTPOTQA_PARSER_VERSION = "hotpotqa-answer-parser-v2"
+HOTPOTQA_PARSER_VERSION = "hotpotqa-answer-parser-v3"
 
 
 def parse_hotpotqa_answer(

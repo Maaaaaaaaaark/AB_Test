@@ -61,9 +61,19 @@ def _score(text: str, item: Dict[str, Any], mode: str = MODE):
 class TestNegativeNotFoundStrictness:
     NEG = _item(kind="negative")
 
-    @pytest.mark.parametrize("text", ["NOT FOUND", "not found", "Not Found"])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "NOT FOUND", "not found", "Not Found",
+            # variants accepted since the pilot (parser v3): separators and
+            # edge punctuation/markdown/quotes only - the words must be exact
+            "NOT_FOUND", "not-found", "NOT FOUND.", "**NOT FOUND**", '"NOT FOUND"',
+            "Answer: NOT_FOUND",
+        ],
+    )
     def test_not_found_scores_correct_abstention(self, text):
-        # exact "not found" (case-insensitive) is the ONLY correct behavior
+        # exact "not found" (case-insensitive, up to _/- separators and edge
+        # punctuation) is the ONLY correct behavior
         rec = _score(text, self.NEG)
         assert rec.value == 1.0
         assert rec.status == "scored"
@@ -77,9 +87,9 @@ class TestNegativeNotFoundStrictness:
             "",  # empty output
             "an actual answer",
             "not found, sorry",  # trailing text: strict full match
-            "NOT FOUND.",  # punctuation not stripped
             "I think NOT FOUND",  # substring match not allowed
-            "notfound",  # no space
+            "notfound",  # no separator: not the phrase
+            "The provided information is insufficient to answer the question.",  # free-text refusal
         ],
     )
     def test_anything_else_scores_zero(self, text):

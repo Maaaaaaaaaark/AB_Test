@@ -457,3 +457,142 @@ class TestGsm8kExemplar:
         )
         with pytest.raises(ValueError):
             render_item(self._item(), cfg)
+
+
+# --------------------------------------------------------------------------
+# 7. Real pilot outputs (seed 0): NOT FOUND variants and inline "Answer:"
+#    markers. Tails copied verbatim from the pilot prediction records;
+#    " | " in the dump stood for a newline.
+# --------------------------------------------------------------------------
+
+from weval.parsing.musique_answer import is_not_found_answer  # noqa: E402
+
+
+def _raw(tail: str) -> str:
+    return tail.replace(" | ", "\n")
+
+
+QWEN_STOPS = MODELS["qwen3-4b-thinking-off"]["stop_strings"]
+GEMMA_STOPS = MODELS["gemma-3-4b-it"]["stop_strings"]
+LLAMA_STOPS = MODELS["llama-3.2-3b-instruct"]["stop_strings"]
+R1_STOPS = MODELS["deepseek-r1-distill-qwen-1.5b"]["stop_strings"]
+
+# qwen3-4b-thinking-off, the 7 approved pilot negatives
+QWEN_OFF_NEGATIVES = [
+    "Answer: NOT_FOUND<|im_end|>",   # Mercury
+    "Answer: NOT_FOUND<|im_end|>",   # Warsaw
+    "Answer: NOT_FOUND<|im_end|>",   # Chopin
+    "Answer: NOT_FOUND<|im_end|>",   # Anne Fitzalan-Howard
+    "Answer: NOT_FOUND<|im_end|>",   # Sean Paul
+    "Answer: NOT_FOUND<|im_end|>",   # Karachi
+    "Answer: Season 16<|im_end|>",   # Katy Perry (hard negative)
+]
+# qwen3-4b-thinking-on, the same 7 negatives (tails after the reasoning)
+QWEN_ON_NEGATIVES = [
+    "ful here. Since there's no information on Mercury, the answer should be NOT FOUND. | </think> |  | Answer: NOT_FOUND<|im_end|>",
+    "er should be NOT FOUND. The user's question can't be answered with the given data. | </think> |  | Answer: NOT_FOUND<|im_end|>",
+    "e NOT FOUND because there's no information about Chopin's family living in Warsaw. | </think> |  | Answer: NOT_FOUND<|im_end|>",
+    "t mention the death date of Anne Fitzalan-Howard, the correct answer is NOT FOUND. | </think> |  | Answer: NOT_FOUND<|im_end|>",
+    " or a video model in the provided text. Therefore, the answer should be NOT FOUND. | </think> |  | Answer: NOT FOUND<|im_end|>",
+    " So the answer isn't in the given info. Therefore, the answer should be NOT FOUND. | </think> |  | Answer: NOT_FOUND<|im_end|>",
+    "on 1 and season 8, but those don't mention Katy Perry. So the answer should be season 16. | </think> |  | Answer: 16<|im_end|>",
+]
+
+
+def _neg_score(raw: str, mode: str, stops) -> float:
+    parsed = parse_musique_answer(raw, mode, stops)
+    item = {"item_id": "n", "group_id": "g", "split": "debug", "kind": "negative",
+            "reference_answers": ["x"]}
+    return score_musique(item, parsed).value
+
+
+def _pos_score(raw: str, golds, mode: str, stops):
+    parsed = parse_musique_answer(raw, mode, stops)
+    item = {"item_id": "p", "group_id": "g", "split": "debug", "kind": "positive",
+            "reference_answers": golds}
+    return parsed, score_musique(item, parsed)
+
+
+class TestPilotRealOutputs:
+    def test_qwen_off_abstains_on_six_of_seven_negatives(self):
+        # parser v2 (exact match) scored 0/7 because of the underscore
+        scores = [_neg_score(r, "thinking_disabled", QWEN_STOPS) for r in QWEN_OFF_NEGATIVES]
+        assert scores == [1.0] * 6 + [0.0]
+
+    def test_qwen_on_abstains_on_six_of_seven_negatives(self):
+        raws = ["<think>\n" + _raw(t) for t in QWEN_ON_NEGATIVES]
+        scores = [_neg_score(r, "optional_thinking", QWEN_STOPS) for r in raws]
+        assert scores == [1.0] * 6 + [0.0]  # parser v2 gave 1/7
+
+    def test_not_found_variant_is_recorded(self):
+        parsed = parse_musique_answer("Answer: NOT_FOUND<|im_end|>", "thinking_disabled", QWEN_STOPS)
+        assert parsed.diagnostics["is_not_found"] is True
+        assert parsed.diagnostics["not_found_variant"] == "NOT_FOUND"
+
+    def test_r1_not_found_and_free_text_refusal(self):
+        ok = _raw("sed on the given information, and the answer should be exactly NOT FOUND. | </think> |  | Answer: Not Found<｜end▁of▁sentence｜>")
+        assert _neg_score(ok, "prefilled_thinking", R1_STOPS) == 1.0
+        refusal = _raw("urate answer. | </think> |  | Answer: The highest point in Warsaw is not provided in the given information.<｜end▁of▁sentence｜>")
+        assert _neg_score(refusal, "prefilled_thinking", R1_STOPS) == 0.0  # free text is not NOT FOUND
+        memory = _raw("rth years. Therefore, the answer should be about 0.24 Earth years. | </think> |  | Answer: 0.24 Earth years<｜end▁of▁sentence｜>")
+        assert _neg_score(memory, "prefilled_thinking", R1_STOPS) == 0.0
+
+    @pytest.mark.parametrize(
+        "raw, golds, value, source, em",
+        [
+            ("Saxon Palace grounds Answer:<end_of_turn>", ["Saxon Palace.", "Saxon Palace"], "Saxon Palace grounds", "inline_marker", 0),
+            ("8 April 2013 Answer: 8 April 2013<end_of_turn>", ["8 April 2013"], "8 April 2013", "inline_marker", 1),
+            ("Seasons 2, 3, 5, 9, 14 Answer:<end_of_turn>", ["season nine"], "Seasons 2, 3, 5, 9, 14", "inline_marker", 0),
+            ("175,155 Answer: 175,155<end_of_turn>", ["175,155"], "175,155", "inline_marker", 1),
+            ("1632<end_of_turn>", ["1632"], "1632", "single_line", 1),
+            ("Belgium Answer:<end_of_turn>", ["Belgium"], "Belgium", "inline_marker", 1),
+        ],
+    )
+    def test_gemma_inline_answer_marker(self, raw, golds, value, source, em):
+        parsed, score = _pos_score(raw, golds, "no_thinking_channel", GEMMA_STOPS)
+        assert parsed.value == value
+        assert parsed.diagnostics["answer_source"] == source
+        assert score.detail["em"] == em
+
+    def test_gemma_positive_f1_recomputed(self):
+        cases = [
+            ("Saxon Palace grounds Answer:<end_of_turn>", ["Saxon Palace.", "Saxon Palace"]),
+            ("8 April 2013 Answer: 8 April 2013<end_of_turn>", ["8 April 2013"]),
+            ("Seasons 2, 3, 5, 9, 14 Answer:<end_of_turn>", ["season nine"]),
+            ("175,155 Answer: 175,155<end_of_turn>", ["175,155"]),
+            ("1632<end_of_turn>", ["1632"]),
+            ("Belgium Answer:<end_of_turn>", ["Belgium"]),
+        ]
+        f1s = [_pos_score(r, g, "no_thinking_channel", GEMMA_STOPS)[1].value for r, g in cases]
+        assert sum(f1s) / len(f1s) == pytest.approx(0.8)  # pilot report showed 0.572
+
+    def test_gemma_hard_negative_answer_is_still_an_answer(self):
+        assert _neg_score("Season 16 Answer: Season 16<end_of_turn>", "no_thinking_channel", GEMMA_STOPS) == 0.0
+        assert _neg_score("NOT FOUND<end_of_turn>", "no_thinking_channel", GEMMA_STOPS) == 1.0
+
+    def test_llama_outputs(self):
+        parsed, score = _pos_score("Answer: Saxon Palace<|eot_id|>", ["Saxon Palace.", "Saxon Palace"],
+                                   "no_thinking_channel", LLAMA_STOPS)
+        assert parsed.value == "Saxon Palace" and score.detail["em"] == 1
+        hp = parse_hotpotqa_answer(_raw("Foster's Group |  | Answer: Foster's Group<|eot_id|>"),
+                                   "no_thinking_channel", LLAMA_STOPS)
+        assert hp.value == "Foster's Group" and hp.diagnostics["answer_source"] == "answer_line"
+        empty = parse_hotpotqa_answer("Answer:<|eot_id|>", "no_thinking_channel", LLAMA_STOPS)
+        assert empty.value is None and empty.status == "invalid_format"
+
+    @pytest.mark.parametrize(
+        "text, expected",
+        [
+            ("NOT FOUND", True), ("NOT_FOUND", True), ("not-found", True), ("Not Found.", True),
+            ("**NOT FOUND**", True), ('"NOT FOUND"', True), ("[NOT FOUND]", True),
+            ("notfound", False), ("not found, sorry", False), ("I think NOT FOUND", False),
+            ("The provided information is insufficient to answer the question.", False),
+            ("Not found in the provided information", False), (None, False),
+        ],
+    )
+    def test_not_found_rule(self, text, expected):
+        assert is_not_found_answer(text) is expected
+
+    def test_inline_marker_does_not_touch_ordinary_answers(self):
+        assert extract_short_answer("Lisa Jackson") == ("Lisa Jackson", "single_line")
+        assert extract_short_answer("Reasoning.\nAnswer: 8 April 2013 Answer: 8 April 2013") == ("8 April 2013", "answer_line")

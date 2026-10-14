@@ -46,9 +46,11 @@ REPORT_VERSION = "report-v3"
 
 def _answer_format_counts(records: List[Dict[str, Any]]) -> Dict[str, int]:
     """How the short answer was obtained (free-text QA tasks): an explicit
-    "Answer:" line, a single-line reply, or a failure (invalid format = no
-    extractable answer; missing final = reasoning never closed / empty)."""
-    out = {"answer_line": 0, "single_line": 0, "invalid_format": 0, "missing_final": 0}
+    "Answer:" line, a single-line reply, a single line with an inline
+    "Answer:" marker (format deviation, answer still extracted), or a failure
+    (invalid format = no extractable answer; missing final = reasoning never
+    closed / empty)."""
+    out = {"answer_line": 0, "single_line": 0, "inline_marker": 0, "invalid_format": 0, "missing_final": 0}
     for r in records:
         st = r.get("status")
         if st in ("invalid_format", "missing_final"):
