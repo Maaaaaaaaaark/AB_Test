@@ -15,7 +15,7 @@ stages:
     musique_parents: 175       # from MuSiQue public DEV, first eligible parents
     processbench_per_subset: 25
   holdout:
-    musique_parents: 100       # from MuSiQue public DEV, next eligible parents
+    musique_parents: 175       # from MuSiQue public DEV, next eligible parents
     processbench_per_subset: 25
   reference:
     reference_per_dataset: 100  # frozen, filtered reference subset
