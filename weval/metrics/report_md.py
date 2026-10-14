@@ -181,9 +181,18 @@ def render_markdown(report: ReportData) -> str:
 
     rec = report.recommendation
     if rec:
-        lines.append("## Role recommendation")
+        mode = rec.get("mode")
+        stage = rec.get("stage")
+        if mode == "selection_nomination":
+            lines.append("## Role recommendation (selection)")
+        elif mode == "holdout_check":
+            lines.append("## Holdout check of the selection nominee (no re-pick)")
+        elif mode == "informational_no_nomination":
+            lines.append(f"## Role metrics vs thresholds (informational - stage `{stage}` never nominates)")
+        else:
+            lines.append("## Role recommendation")
         lines.append("")
-        lines.append(f"thresholds status: **{rec.get('thresholds', {}).get('status')}**")
+        lines.append(f"stage: **{stage}** · thresholds status: **{rec.get('thresholds', {}).get('status')}**")
         lines.append("")
         lines.append("### Evidence worker (MuSiQue local)")
         lines.append("")
@@ -205,10 +214,20 @@ def render_markdown(report: ReportData) -> str:
                 f"{_fmt(m['macro_error_solution_acc'], 3)} | {_fmt(m['mean_cproxy'], 1)} |"
             )
         lines.append("")
+        hc = rec.get("holdout_check")
         if rec.get("recommendation"):
             lines.append(f"- nominated evidence worker: **{rec['recommendation']['evidence_worker']}**")
             lines.append(f"- nominated math checker: **{rec['recommendation']['math_checker']}**")
             lines.append(f"- {rec['recommendation']['note']}")
+        elif hc is not None:
+            if hc.get("available"):
+                for role in ("evidence_worker", "math_checker"):
+                    r = hc.get(role) or {}
+                    lines.append(f"- {role.replace('_', ' ')}: selection nominee **{r.get('nominee')}** -> **{r.get('result')}**")
+            else:
+                lines.append(f"- {hc.get('note')}")
+            if rec.get("note"):
+                lines.append(f"- {rec['note']}")
         elif rec.get("note"):
             lines.append(f"- {rec['note']}")
         lines.append("")

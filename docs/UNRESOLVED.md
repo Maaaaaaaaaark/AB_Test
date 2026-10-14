@@ -149,7 +149,9 @@ user's explicit sign-off, `RESOLVED` = done (kept for the record).
 
 ## 8. Thresholds are draft (blocks formal selection by design)
 
-- **Status:** OPEN (by design - user confirmation IS the gate)
+- **Status:** RESOLVED 2026-10-14 - confirmed by yh.liang.2026 before any
+  selection run, values unchanged from the pre-pilot draft.
+- **Original status:** OPEN (by design - user confirmation IS the gate)
 - **What is missing:** `configs/thresholds.yaml` has
   `status: draft_unconfirmed`.
 - **What it blocks:** `selection` and `holdout` plans

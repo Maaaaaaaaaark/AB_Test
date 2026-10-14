@@ -212,8 +212,10 @@ reported, not hidden).
 - Seeds 0/1/2 for formal local runs - every seed is reported plus the mean;
   never best-of-N, never majority voting. Seed 0 for smoke/pilot/reference.
 - Token budgets (safety budgets, not targets): MuSiQue 2048 new tokens;
-  ProcessBench and whole-question tasks 4096. Identical across configs;
-  8192 would be a separate budget condition and is not used.
+  ProcessBench, GSM8K and HotpotQA 4096; MATH 8192 (raised from 4096 after
+  the pilot, where Qwen3 thinking-on left 4/10 problems without a final
+  answer at 4096; MATH is a reference task and never decides selection).
+  Identical across configs within a task.
 - Context length is checked per item BEFORE generation (common eligibility
   rule); an item that does not fit is recorded as ineligible, never silently
   truncated.
@@ -313,5 +315,20 @@ reported, not hidden).
   provisional).
 - The holdout is evaluated only for the selection-nominated candidate and may
   never be used to re-pick.
+- Only the selection stage nominates (report mode `selection_nomination`).
+  The holdout report gives pass/fail of the selection nominee of each role
+  against the same thresholds (mode `holdout_check`); a failing nominee is
+  reported as failing, never replaced. Smoke, pilot and reference reports
+  show the candidate metrics next to the thresholds for information only and
+  never nominate (mode `informational_no_nomination`), even with confirmed
+  thresholds. (Fixed in report-v4: before it, a confirmed thresholds file
+  made the pilot report print nominations.)
 - Thresholds live in `configs/thresholds.yaml`; `draft_unconfirmed` values
   gate formal selection - the user confirming the file IS the gate.
+  Confirmed on 2026-10-14, before any selection run, with the pre-pilot
+  values unchanged.
+- Candidates for selection/holdout (decided after the pilot, before
+  selection): Qwen3-4B thinking off and on, Gemma-3-4B-it, Llama-3.2-3B.
+  DeepSeek-R1-Distill-Qwen-1.5B was dropped: in the pilot it failed both
+  roles (evidence F1 0.40, negative abstention 1/7; ProcessBench macro F1
+  0.00 with 6/21 length stops). It remains in the descriptive reference plan.

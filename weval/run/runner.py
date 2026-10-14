@@ -96,6 +96,11 @@ def _nominated_holdout_configs(out_dir: Path) -> List[str]:
         )
     data = json.loads(sel.read_text(encoding="utf-8"))
     rec = data.get("recommendation") or {}
+    if rec.get("mode") not in (None, "selection_nomination"):
+        raise PlanGateError(
+            f"reports/selection/report.json was not produced by the selection stage "
+            f"(mode {rec.get('mode')!r}); re-run `weval report --plan selection`"
+        )
     inner = rec.get("recommendation") or {}
     nominated = {inner.get("evidence_worker"), inner.get("math_checker")} - {None}
     if not nominated:

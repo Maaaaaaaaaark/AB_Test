@@ -70,7 +70,11 @@ math:
 
     Please reason step by step, and put your final answer within \boxed{}.
     Solution:
-  max_new_tokens: 4096
+  # 8192 (was 4096): in the pilot Qwen3 thinking-on left 4/10 MATH problems
+  # without a final answer at 4096 tokens (mean output 3489 tokens), so the
+  # reference score measured the budget, not the model. Reference-only task;
+  # identical for every configuration.
+  max_new_tokens: 8192
   scorer: math_equivalence   # vendored official equivalence checker; extraction is separate
   parser: math_boxed
 

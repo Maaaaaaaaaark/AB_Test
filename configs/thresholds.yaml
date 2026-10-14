@@ -11,9 +11,13 @@
 # Implementation, tests, smoke and pilot do not wait for this confirmation.
 # ---------------------------------------------------------------------------
 decision_config_version: 1
-status: draft_unconfirmed
-confirmed_by: null
-confirmed_at: null
+status: confirmed
+confirmed_by: yh.liang.2026
+confirmed_at: "2026-10-14"
+# Confirmed BEFORE any selection run, with the values unchanged from the
+# pre-pilot draft. The pilot (6 positives, 7 negatives, 21 ProcessBench
+# records) was not used to tune them. Frozen from here on: no change after
+# selection scores have been inspected.
 
 # Role 1: evidence worker (MuSiQue local QA with abstention)
 evidence_worker:

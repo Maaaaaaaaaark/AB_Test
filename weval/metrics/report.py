@@ -8,9 +8,11 @@ answers and scores with the pinned parser/scorer versions, then computes:
     preserved for ProcessBench macro metrics),
   * paired config differences on identical items,
   * Cproxy / Cweighted / Efficiency_compute,
-  * role qualification against thresholds.yaml - recommendations are produced
-    ONLY when thresholds.status == "confirmed"; otherwise the draft values
-    are shown without a recommendation.
+  * role qualification against thresholds.yaml - a nomination is produced
+    ONLY by the selection stage with thresholds.status == "confirmed";
+    holdout only checks the selection nominee (pass/fail, never re-picks);
+    smoke/pilot/reference show metrics next to the thresholds for
+    information and never nominate.
 
 Unresolved infrastructure failures mark the comparison incomplete and are
 listed explicitly (report_incomplete_on_unresolved).
@@ -41,7 +43,12 @@ from .stats import (
     paired_difference,
 )
 
-REPORT_VERSION = "report-v3"
+REPORT_VERSION = "report-v4"
+
+# Only this plan stage nominates role workers; holdout only checks the
+# selection nominee; every other stage is informational.
+NOMINATING_STAGE = "selection"
+HOLDOUT_STAGE = "holdout"
 
 
 def _answer_format_counts(records: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -588,11 +595,92 @@ def _paired_differences(
     return out
 
 
+def _evidence_meets(e: Dict[str, Any], ew: Dict[str, Any]) -> bool:
+    """Quality thresholds of the evidence-worker role (point estimates)."""
+    return (
+        e["answerable_f1"] is not None and e["false_abstention_rate"] is not None
+        and e["reviewed_negative_correct_abstention"] is not None
+        and e["answerable_f1"] >= ew["answerable_f1_min"]
+        and e["false_abstention_rate"] <= ew["false_abstention_max"]
+        and e["reviewed_negative_correct_abstention"] >= ew["reviewed_negative_abstention_min"]
+    )
+
+
+def _math_meets(m: Dict[str, Any], mc: Dict[str, Any]) -> bool:
+    """Quality thresholds of the math-checker role (point estimates)."""
+    return (
+        m["macro_f1"] is not None and m["macro_correct_solution_acc"] is not None
+        and m["macro_error_solution_acc"] is not None
+        and m["macro_f1"] >= mc["macro_f1_min"]
+        and m["macro_correct_solution_acc"] >= mc["macro_correct_solution_acc_min"]
+        and m["macro_error_solution_acc"] >= mc["macro_error_solution_acc_min"]
+    )
+
+
+def _selection_nominees(out_dir: Path) -> Optional[Dict[str, Optional[str]]]:
+    """The nomination recorded in reports/selection/report.json (None if that
+    report does not exist or nominates nothing)."""
+    p = out_dir / "reports" / "selection" / "report.json"
+    if not p.exists():
+        return None
+    data = json.loads(p.read_text(encoding="utf-8"))
+    inner = (data.get("recommendation") or {}).get("recommendation") or {}
+    return {
+        "evidence_worker": inner.get("evidence_worker"),
+        "math_checker": inner.get("math_checker"),
+    }
+
+
+def _holdout_check(
+    out_dir: Path,
+    evidence: List[Dict[str, Any]],
+    math_ck: List[Dict[str, Any]],
+    ew: Dict[str, Any],
+    mc: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Pass/fail of the SELECTION nominee of each role on the holdout data.
+    Never nominates or re-ranks: a config that was not nominated at selection
+    is not looked at, and a failing nominee is reported as failing."""
+    nominees = _selection_nominees(out_dir)
+    if nominees is None:
+        return {
+            "available": False,
+            "note": "reports/selection/report.json not found: there is no selection nominee to check",
+        }
+    out: Dict[str, Any] = {"available": True, "source": "reports/selection/report.json"}
+    for role, rows, meets, thr_role in (
+        ("evidence_worker", evidence, _evidence_meets, ew),
+        ("math_checker", math_ck, _math_meets, mc),
+    ):
+        nominee = nominees.get(role)
+        if nominee is None:
+            out[role] = {"nominee": None, "result": "no_selection_nominee"}
+            continue
+        row = next((r for r in rows if r["config"] == nominee), None)
+        if row is None or not row["complete"]:
+            out[role] = {"nominee": nominee, "result": "incomplete"}
+            continue
+        out[role] = {"nominee": nominee, "result": "pass" if meets(row, thr_role) else "fail"}
+    return out
+
+
 def _recommendation(cfg: ConfigBundle, plan: PlanCfg, report: ReportData, out_dir: Path) -> Dict[str, Any]:
     """Role qualification from thresholds.yaml.
 
-    Recommendations are produced ONLY when thresholds.status == "confirmed".
-    Otherwise the draft values are echoed and no candidate is nominated.
+    Only the SELECTION stage nominates, and only when thresholds.status ==
+    "confirmed":
+
+      * selection - qualified configs, lowest-Cproxy nominee per role
+                    (mode "selection_nomination");
+      * holdout   - pass/fail of the selection nominee on holdout data; never
+                    nominates or re-picks (mode "holdout_check");
+      * smoke / pilot / reference - candidate metrics are shown next to the
+                    thresholds for information only; recommendation is None
+                    (mode "informational_no_nomination"), whatever the
+                    thresholds status.
+
+    With unconfirmed thresholds, selection/holdout show the draft values and
+    nominate/check nothing (mode "gated_unconfirmed_thresholds").
     """
     thr = cfg.thresholds
     evidence: List[Dict[str, Any]] = []
@@ -628,6 +716,7 @@ def _recommendation(cfg: ConfigBundle, plan: PlanCfg, report: ReportData, out_di
         })
 
     result: Dict[str, Any] = {
+        "stage": plan.stage,
         "thresholds": {
             "status": thr.status,
             "evidence_worker": thr.evidence_worker,
@@ -637,7 +726,17 @@ def _recommendation(cfg: ConfigBundle, plan: PlanCfg, report: ReportData, out_di
         "evidence_worker_candidates": evidence,
         "math_checker_candidates": math_ck,
     }
+    if plan.stage not in (NOMINATING_STAGE, HOLDOUT_STAGE):
+        result["mode"] = "informational_no_nomination"
+        result["recommendation"] = None
+        result["note"] = (
+            f"stage {plan.stage!r} is not the selection stage: candidate metrics are "
+            "shown next to the thresholds for information only and NO worker is "
+            "nominated. Only `weval report --plan selection` nominates."
+        )
+        return result
     if thr.status != "confirmed":
+        result["mode"] = "gated_unconfirmed_thresholds"
         result["recommendation"] = None
         result["note"] = (
             "thresholds.yaml status is not 'confirmed'; draft values are shown "
@@ -647,23 +746,27 @@ def _recommendation(cfg: ConfigBundle, plan: PlanCfg, report: ReportData, out_di
 
     ew = thr.evidence_worker
     mc = thr.math_checker
+    if plan.stage == HOLDOUT_STAGE:
+        result["mode"] = "holdout_check"
+        result["recommendation"] = None
+        result["holdout_check"] = _holdout_check(out_dir, evidence, math_ck, ew, mc)
+        result["note"] = (
+            "holdout checks the selection nominee of each role against the same "
+            "thresholds; it never nominates or re-picks. A failing nominee is "
+            "reported as failing."
+        )
+        return result
+
+    result["mode"] = "selection_nomination"
     ev_qualified = [
         e for e in evidence
         if e["complete"] and e["mean_cproxy_role_workload_50_50"] is not None
-        and e["answerable_f1"] is not None and e["false_abstention_rate"] is not None
-        and e["reviewed_negative_correct_abstention"] is not None
-        and e["answerable_f1"] >= ew["answerable_f1_min"]
-        and e["false_abstention_rate"] <= ew["false_abstention_max"]
-        and e["reviewed_negative_correct_abstention"] >= ew["reviewed_negative_abstention_min"]
+        and _evidence_meets(e, ew)
     ]
     mc_qualified = [
         m for m in math_ck
         if m["complete"] and m["mean_cproxy"] is not None
-        and m["macro_f1"] is not None and m["macro_correct_solution_acc"] is not None
-        and m["macro_error_solution_acc"] is not None
-        and m["macro_f1"] >= mc["macro_f1_min"]
-        and m["macro_correct_solution_acc"] >= mc["macro_correct_solution_acc_min"]
-        and m["macro_error_solution_acc"] >= mc["macro_error_solution_acc_min"]
+        and _math_meets(m, mc)
     ]
     result["evidence_worker_qualified"] = sorted(ev_qualified, key=lambda e: (e["mean_cproxy_role_workload_50_50"] is None, e["mean_cproxy_role_workload_50_50"] or 0.0))
     result["math_checker_qualified"] = sorted(mc_qualified, key=lambda m: (m["mean_cproxy"] is None, m["mean_cproxy"] or 0.0))

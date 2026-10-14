@@ -145,7 +145,8 @@ weval estimate --source smoke --target pilot
 # 3. pilot: 10 musique parents + 5 processbench/subset + 10 references
 #    (requires approved negative pairs - see UNRESOLVED.md #3)
 bash scripts/slurm/submit.sh pilot
-weval report --plan pilot
+weval report --plan pilot               # informational: smoke/pilot/reference
+                                        # reports never nominate a worker
 weval estimate --source pilot --target selection
 
 # 4. FORMAL SELECTION - gated, never auto-launched:
@@ -159,6 +160,7 @@ weval report --plan selection          # per-seed + mean, clustered CIs,
 
 # 5. holdout: runs ONLY the selection-nominated candidate, never re-picks
 bash scripts/slurm/submit.sh holdout
+weval report --plan holdout            # pass/fail of the selection nominee
 
 # 6. descriptive whole-question references (seed 0, never decide the worker)
 bash scripts/slurm/submit.sh reference

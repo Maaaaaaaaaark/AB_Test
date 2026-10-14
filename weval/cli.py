@@ -177,8 +177,14 @@ def cmd_report(args: argparse.Namespace) -> int:
     mp = write_report_md(_out_dir(args.root), args.plan, report)
     print(f"report written: {jp}")
     print(f"markdown:      {mp}")
-    print(f"thresholds status: {report.thresholds_status} "
-          f"(recommendation {'gated' if report.thresholds_status != 'confirmed' else 'active'})")
+    mode = (report.recommendation or {}).get("mode")
+    mode_text = {
+        "selection_nomination": "selection stage: nominees written",
+        "holdout_check": "holdout: selection nominee checked, no re-pick",
+        "informational_no_nomination": f"stage {args.plan!r} never nominates (informational only)",
+        "gated_unconfirmed_thresholds": "gated: thresholds not confirmed, no nomination",
+    }.get(mode, str(mode))
+    print(f"thresholds status: {report.thresholds_status} ({mode_text})")
     return 0
 
 
