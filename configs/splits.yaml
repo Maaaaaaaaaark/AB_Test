@@ -12,7 +12,7 @@ stages:
     processbench_per_subset: 5
     reference_per_dataset: 10
   selection:
-    musique_parents: 100       # from MuSiQue public DEV, first eligible parents
+    musique_parents: 175       # from MuSiQue public DEV, first eligible parents
     processbench_per_subset: 25
   holdout:
     musique_parents: 100       # from MuSiQue public DEV, next eligible parents
