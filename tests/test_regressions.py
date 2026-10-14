@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from weval.datasets.hotpotqa import _context_paragraphs
-from weval.metrics.report import _aggregate_musique
+from weval.metrics.report import _aggregate_musique, _aggregate_processbench, _aggregate_simple
 from weval.models.scripted import ScriptedBackend
 from weval.parsing.musique_answer import parse_musique_answer
 from weval.scoring.musique_em_f1 import score_musique
 from weval.metrics.stats import macro_group_bootstrap, paired_difference
 from weval.run.store import record_fingerprints
+from weval.worked_examples import _find_predictions
 
 
 def test_hotpot_context_struct_of_lists_is_not_split_into_key_characters() -> None:
@@ -90,6 +91,58 @@ def test_false_abstention_stays_in_answerable_f1_population() -> None:
     )
     assert aggregate["answerable_f1"]["estimate"] == 0.0
     assert aggregate["relation_vs_natural"]["natural"]["n"] == 1
+
+
+def test_processbench_reports_format_missing_final_and_length_separately() -> None:
+    items = {
+        "bad-format": {"item_id": "bad-format", "subset": "gsm8k"},
+        "open": {"item_id": "open", "subset": "gsm8k"},
+    }
+    records = [
+        {
+            "item_id": "bad-format", "group_id": "g1", "value": 0.0,
+            "status": "invalid_format", "finish_reason": "length",
+            "detail": {"kind": "error_solution", "subset": "gsm8k"},
+        },
+        {
+            "item_id": "open", "group_id": "g2", "value": 0.0,
+            "status": "missing_final", "finish_reason": "eos",
+            "detail": {"kind": "correct_solution", "subset": "gsm8k"},
+        },
+    ]
+    agg = _aggregate_processbench(records, items, n_boot=0)["per_subset"]["gsm8k"]
+    assert agg["n_format_errors"] == 1
+    assert agg["n_missing_final"] == 1
+    assert agg["n_length_terminated"] == 1
+
+
+def test_gsm8k_reports_relaxed_accuracy_without_overwriting_official_score() -> None:
+    records = [
+        {
+            "group_id": "g1", "value": 0.0, "status": "invalid_format",
+            "detail": {"relaxed_matches_gold": True},
+        },
+        {
+            "group_id": "g2", "value": 0.0, "status": "scored",
+            "detail": {"relaxed_matches_gold": False},
+        },
+    ]
+    agg = _aggregate_simple("gsm8k", records, n_boot=0)
+    assert agg["accuracy"]["estimate"] == 0.0
+    assert agg["format_compliance_rate"] == 0.5
+    assert agg["relaxed_accuracy"]["estimate"] == 0.5
+    assert agg["relaxed_would_rescue"] == 1
+
+
+def test_worked_examples_find_one_prediction_for_every_config(tmp_path) -> None:
+    item = {"item_id": "x", "task": "gsm8k"}
+    base = tmp_path / "predictions" / "smoke"
+    for config in ("model-a", "model-b"):
+        path = base / config / "gsm8k" / "0" / "x.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+    found = _find_predictions(tmp_path, "smoke", item)
+    assert [p.parts[-4] for p in found] == ["model-a", "model-b"]
 
 
 def test_scripted_default_closes_prefilled_reasoning_channel() -> None:

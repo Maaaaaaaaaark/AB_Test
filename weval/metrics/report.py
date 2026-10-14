@@ -40,7 +40,7 @@ from .stats import (
     paired_difference,
 )
 
-REPORT_VERSION = "report-v1"
+REPORT_VERSION = "report-v2"
 
 
 @dataclass
@@ -210,7 +210,9 @@ def _aggregate_processbench(records: List[Dict[str, Any]], items_by_id: Dict[str
         per_subset[subset] = {
             **agg,
             "n_records": len(rs),
-            "n_unscored_format_errors": len(rs) - len(scored),
+            "n_format_errors": sum(r.get("status") == "invalid_format" for r in rs),
+            "n_missing_final": sum(r.get("status") == "missing_final" for r in rs),
+            "n_length_terminated": sum(r.get("finish_reason") == "length" for r in rs),
         }
         # macro inputs: per-group values tagged with kind
         for metric in macro_inputs:
@@ -262,10 +264,19 @@ def _aggregate_simple(task: str, records: List[Dict[str, Any]], n_boot: int = N_
             1 for r in records
             if r.get("status") == "invalid_format" and r.get("detail", {}).get("relaxed_matches_gold")
         )
+        relaxed_by_group: Dict[str, List[float]] = {}
+        for r in records:
+            relaxed_by_group.setdefault(r["group_id"], []).append(
+                1.0 if r.get("detail", {}).get("relaxed_matches_gold") else 0.0
+            )
         extra = {
             "extraction_failure_rate": failures / n if n else None,
+            "format_compliance_rate": (n - failures) / n if n else None,
             "n_extraction_failures": failures,
             "relaxed_would_rescue": relaxed_hits,
+            "relaxed_accuracy": group_bootstrap(
+                relaxed_by_group, n_boot=n_boot
+            ).to_dict(),
             "n": n,
         }
     elif task == "math":
@@ -307,7 +318,9 @@ def build_report(
         created_at_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         thresholds_status=cfg.thresholds.status,
     )
-    scored_by_group: Dict[Tuple[str, str], Dict[str, Dict[str, float]]] = {}
+    paired_inputs: Dict[
+        Tuple[str, str], Dict[str, Dict[str, Dict[str, float]]]
+    ] = {}
 
     for config_name in plan.configs:
         model_cfg = cfg.model(config_name)
@@ -348,7 +361,11 @@ def build_report(
                     report.notes.append(f"parse/score error for {config_name}/{task}/{r['item_id']}: {e}")
                     n_parse_errors += 1
                     continue
-                scored.append({**score.to_dict(), "seed": r["seed"]})
+                scored.append({
+                    **score.to_dict(),
+                    "seed": r["seed"],
+                    "finish_reason": r.get("finish_reason"),
+                })
 
             if task == "musique_local":
                 metrics = _aggregate_musique(cfg, scored, items_by_id, n_boot=n_boot)
@@ -398,7 +415,32 @@ def build_report(
                 if s.get("value") is not None:
                     observation = f"{s['item_id']}::seed={s['seed']}"
                     by_group.setdefault(s["group_id"], {})[observation] = float(s["value"])
-            scored_by_group[(config_name, task)] = by_group
+            if task == "musique_local":
+                metric_groups: Dict[str, Dict[str, Dict[str, float]]] = {
+                    "answerable_f1": {},
+                    "false_abstention_rate": {},
+                    "reviewed_negative_correct_abstention": {},
+                    "unreviewed_negative_correct_abstention_dev_only": {},
+                }
+                for s in scored:
+                    item = items_by_id.get(s["item_id"])
+                    if item is None:
+                        continue
+                    observation = f"{s['item_id']}::seed={s['seed']}"
+                    group = s["group_id"]
+                    detail = s.get("detail") or {}
+                    if item.get("kind") == "positive":
+                        metric_groups["answerable_f1"].setdefault(group, {})[observation] = float(s["value"])
+                        metric_groups["false_abstention_rate"].setdefault(group, {})[observation] = (
+                            1.0 if detail.get("false_abstention") else 0.0
+                        )
+                    elif item.get("review_status") == "approved":
+                        metric_groups["reviewed_negative_correct_abstention"].setdefault(group, {})[observation] = float(s["value"])
+                    else:
+                        metric_groups["unreviewed_negative_correct_abstention_dev_only"].setdefault(group, {})[observation] = float(s["value"])
+                paired_inputs[(config_name, task)] = metric_groups
+            else:
+                paired_inputs[(config_name, task)] = {"primary": by_group}
 
             # ---- compute metrics ----
             c_items: List[Dict[str, Any]] = []
@@ -436,7 +478,7 @@ def build_report(
             report.compute[config_name][task] = agg
 
     # ---- paired differences (same items across configs) ----
-    report.paired = _paired_differences(plan, scored_by_group, n_boot)
+    report.paired = _paired_differences(plan, paired_inputs, n_boot)
 
     # ---- recommendation ----
     report.recommendation = _recommendation(cfg, plan, report, out_dir)
@@ -462,26 +504,38 @@ def _load_n_text(out_dir: Path, config_name: str) -> Optional[int]:
 
 def _paired_differences(
     plan: PlanCfg,
-    scored_by_group: Dict[Tuple[str, str], Dict[str, Dict[str, float]]],
+    paired_inputs: Dict[
+        Tuple[str, str], Dict[str, Dict[str, Dict[str, float]]]
+    ],
     n_boot: int,
 ) -> Dict[str, Any]:
     configs = list(plan.configs)
     out: Dict[str, Any] = {}
     for task in plan.tasks:
-        per_config = {c: scored_by_group.get((c, task), {}) for c in configs}
-        pairs: Dict[str, Any] = {}
-        for i in range(len(configs)):
-            for j in range(i + 1, len(configs)):
-                a, b = configs[i], configs[j]
-                ci, missing_a, missing_b = paired_difference(
-                    per_config[a], per_config[b], n_boot=n_boot
-                )
-                pairs[f"{a} - {b}"] = {
-                    **ci.to_dict(),
-                    "n_observations_missing_in_a": missing_a,
-                    "n_observations_missing_in_b": missing_b,
-                }
-        out[task] = pairs
+        metric_names = sorted({
+            metric
+            for c in configs
+            for metric in paired_inputs.get((c, task), {}).keys()
+        })
+        out[task] = {}
+        for metric in metric_names:
+            per_config = {
+                c: paired_inputs.get((c, task), {}).get(metric, {})
+                for c in configs
+            }
+            pairs: Dict[str, Any] = {}
+            for i in range(len(configs)):
+                for j in range(i + 1, len(configs)):
+                    a, b = configs[i], configs[j]
+                    ci, missing_a, missing_b = paired_difference(
+                        per_config[a], per_config[b], n_boot=n_boot
+                    )
+                    pairs[f"{a} - {b}"] = {
+                        **ci.to_dict(),
+                        "n_observations_missing_in_a": missing_a,
+                        "n_observations_missing_in_b": missing_b,
+                    }
+            out[task][metric] = pairs
     return out
 
 

@@ -82,12 +82,13 @@ def render_markdown(report: ReportData) -> str:
                 lines.append(f"- relation questions: n={rn.get('relation', {}).get('n')}, mean F1={_fmt(rn.get('relation', {}).get('mean_f1'), 3)}; "
                              f"natural questions: n={rn.get('natural', {}).get('n')}, mean F1={_fmt(rn.get('natural', {}).get('mean_f1'), 3)}")
             elif task == "processbench":
-                lines.append("| subset | error acc | correct acc | F1 | n_error | n_correct | format errors |")
-                lines.append("|---|---|---|---|---|---|---|")
+                lines.append("| subset | error acc | correct acc | F1 | n_error | n_correct | format errors | missing final | length stops |")
+                lines.append("|---|---|---|---|---|---|---|---|---|")
                 for subset, s in (metrics.get("per_subset") or {}).items():
                     lines.append(
                         f"| {subset} | {_fmt_rate(s.get('error_acc'))} | {_fmt_rate(s.get('correct_acc'))} | "
-                        f"{_fmt_rate(s.get('f1'))} | {s.get('n_error')} | {s.get('n_correct')} | {s.get('n_unscored_format_errors')} |"
+                        f"{_fmt_rate(s.get('f1'))} | {s.get('n_error')} | {s.get('n_correct')} | "
+                        f"{s.get('n_format_errors')} | {s.get('n_missing_final')} | {s.get('n_length_terminated')} |"
                     )
                 lines.append("")
                 lines.append("| macro metric (subset-structured, qualification) | estimate | 95% CI |")
@@ -102,7 +103,9 @@ def render_markdown(report: ReportData) -> str:
                 if metrics.get("em"):
                     lines.append(f"| EM | {_ci_cell(metrics.get('em'))} | - |")
                 if task == "gsm8k":
+                    lines.append(f"| format compliance rate | {_fmt_rate(metrics.get('format_compliance_rate'))} | - |")
                     lines.append(f"| extraction failure rate (official regex) | {_fmt_rate(metrics.get('extraction_failure_rate'))} | - |")
+                    lines.append(f"| relaxed accuracy (diagnostic) | {_ci_cell(metrics.get('relaxed_accuracy'))} | - |")
                     lines.append(f"| extraction failures rescued by relaxed parser (diagnostic) | {metrics.get('relaxed_would_rescue')} | - |")
                 if task == "math":
                     lines.append(f"| unscorable (gold missing boxed) | {metrics.get('n_unscorable_gold_missing')} | - |")
@@ -151,14 +154,19 @@ def render_markdown(report: ReportData) -> str:
     if report.paired:
         lines.append("## Paired config differences (A - B, same items, clustered CI)")
         lines.append("")
-        for task, pairs in report.paired.items():
+        for task, metrics in report.paired.items():
             lines.append(f"### {task}")
             lines.append("")
-            lines.append("| pair | mean diff | 95% CI |")
-            lines.append("|---|---|---|")
-            for pair, d in pairs.items():
-                lines.append(f"| {pair} | {_fmt(d.get('estimate'), 4)} | [{_fmt(d.get('ci95_lo'), 4)}, {_fmt(d.get('ci95_hi'), 4)}] |")
-            lines.append("")
+            for metric, pairs in metrics.items():
+                if len(metrics) > 1 or metric != "primary":
+                    direction = "lower is better" if metric == "false_abstention_rate" else "higher is better"
+                    lines.append(f"#### {metric} ({direction})")
+                    lines.append("")
+                lines.append("| pair | mean diff | 95% CI |")
+                lines.append("|---|---|---|")
+                for pair, d in pairs.items():
+                    lines.append(f"| {pair} | {_fmt(d.get('estimate'), 4)} | [{_fmt(d.get('ci95_lo'), 4)}, {_fmt(d.get('ci95_hi'), 4)}] |")
+                lines.append("")
 
     rec = report.recommendation
     if rec:

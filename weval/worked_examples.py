@@ -22,7 +22,7 @@ from .prompts.renderers import render_item
 from .run.manifests import manifest_items_for_task
 from .run.store import safe_item_id
 
-WORKED_EXAMPLES_VERSION = "worked-examples-v1"
+WORKED_EXAMPLES_VERSION = "worked-examples-v2"
 
 # How many items per task go into the document (first N of the pilot pool).
 N_PER_TASK = {"musique_local": 2, "processbench": 2, "gsm8k": 1, "math": 1, "hotpotqa": 1}
@@ -36,13 +36,17 @@ TASK_TITLES = {
 }
 
 
-def _find_prediction(out_dir: Path, plan: str, item: Dict[str, Any]) -> Optional[Path]:
-    """Any real prediction record for this item id (any config/seed), scoped to
-    the item's own task dir (item ids can collide across tasks, e.g. "0")."""
+def _find_predictions(out_dir: Path, plan: str, item: Dict[str, Any]) -> List[Path]:
+    """One real prediction per config for this item, using the lowest seed.
+
+    Worked examples are a cross-model audit surface.  Returning only the first
+    alphabetically sorted config silently hid every other model.
+    """
     base = out_dir / "predictions" / plan
     if not base.exists():
-        return None
+        return []
     safe = safe_item_id(item["item_id"])
+    found: List[Path] = []
     for cfg_dir in sorted(base.iterdir()):
         if not cfg_dir.is_dir():
             continue
@@ -52,8 +56,9 @@ def _find_prediction(out_dir: Path, plan: str, item: Dict[str, Any]) -> Optional
         for seed_dir in sorted(task_dir.iterdir()):
             p = seed_dir / f"{safe}.json"
             if p.exists():
-                return p
-    return None
+                found.append(p)
+                break
+    return found
 
 
 def _render_example_section(
@@ -100,20 +105,23 @@ def _render_example_section(
     else:
         lines.append(f"- gold: {gold}")
     lines.append("")
-    pred = _find_prediction(out_dir, plan, item)
-    if pred is None:
+    predictions = _find_predictions(out_dir, plan, item)
+    if not predictions:
         lines.append(f"Generation: **pending** (no prediction record for plan `{plan}` yet).")
     else:
-        lines.append(f"Generation record: `{pred.relative_to(out_dir)}`")
-        lines.append("")
-        lines.append("```text")
         import json
-
-        rec = json.loads(pred.read_text(encoding="utf-8"))
-        lines.append(rec.get("output_text", "<no output_text>"))
-        lines.append("```")
-        lines.append(f"(config `{rec.get('config')}`, seed {rec.get('seed')}, "
-                     f"finish_reason `{rec.get('finish_reason')}`)")
+        for pred in predictions:
+            rec = json.loads(pred.read_text(encoding="utf-8"))
+            lines.append(f"##### Prediction: `{rec.get('config')}` (seed {rec.get('seed')})")
+            lines.append("")
+            lines.append(f"Generation record: `{pred.relative_to(out_dir)}`")
+            lines.append("")
+            lines.append("```text")
+            lines.append(rec.get("output_text", "<no output_text>"))
+            lines.append("```")
+            lines.append(f"(finish_reason `{rec.get('finish_reason')}`, "
+                         f"Tin={rec.get('n_prompt_tokens')}, Tout={rec.get('n_generated_tokens')})")
+            lines.append("")
     lines.append("")
     return "\n".join(lines)
 
