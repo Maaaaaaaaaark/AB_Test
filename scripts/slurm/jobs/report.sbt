@@ -15,5 +15,5 @@ cd "$WEVAL_ROOT"
 PY="${WEVAL_PYTHON:-python}"
 export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 
-PLAN="${REPORT_PLAN:?set REPORT_PLAN=smoke|pilot|selection|holdout|reference}"
+PLAN="${REPORT_PLAN:?set REPORT_PLAN=smoke|pilot|selection|holdout|reference|math_solve}"
 "$PY" -m weval.cli report --plan "$PLAN"

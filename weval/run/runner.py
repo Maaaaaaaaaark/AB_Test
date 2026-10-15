@@ -119,10 +119,22 @@ def run_plan(
     seeds: Optional[List[int]] = None,
     resume: bool = True,
     log_every: int = 10,
+    only_configs: Optional[List[str]] = None,
 ) -> RunSummary:
     plan = cfg.plan(plan_name)
     gates = check_gates(cfg, plan)
     configs = list(plan.configs)
+    if only_configs:
+        # run a subset of the plan's configurations (e.g. one Slurm job per
+        # model); every record still lands in the plan's prediction store and
+        # the report covers the whole plan
+        unknown = [c for c in only_configs if c not in configs]
+        if unknown:
+            raise PlanGateError(
+                f"--configs {unknown} not in plan {plan_name!r} (plan configs: {configs})"
+            )
+        configs = [c for c in configs if c in set(only_configs)]
+        gates["only_configs"] = configs
     if plan_name == "holdout":
         nominated = _nominated_holdout_configs(out_dir)
         configs = [c for c in configs if c in nominated]

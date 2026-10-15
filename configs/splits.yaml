@@ -19,6 +19,9 @@ stages:
     processbench_per_subset: 25
   reference:
     reference_per_dataset: 100  # frozen, filtered reference subset
+  math_solve:       # standalone single-model math solving (descriptive, no holdout)
+    gsm8k_items: 200      # GSM8K main test, simple random sample
+    math_per_level: 40    # original MATH test, Levels 1-5 x 40 = 200 (stratified)
 
 # Evaluation seeds per stage. Formal local selection/holdout: 0,1,2.
 # Smoke, pilot and descriptive whole-question references: seed 0.
@@ -30,11 +33,14 @@ seeds:
   selection: [0, 1, 2]
   holdout: [0, 1, 2]
   reference: [0]
+  math_solve: [0, 1, 2]
 
 # Seeds for the deterministic, order-independent split/selection procedures.
 # Never change these after the corresponding manifest has been used in a run.
 split_seeds:
   musique_subquestion_choice: 20261013
+  # math_solve samples (GSM8K random 200; MATH 40 per level)
+  math_solve_order: 20261013
   musique_parent_order: 20261013
   # per-item distractor sample + presentation order of the 5 visible
   # MuSiQue paragraphs (builder v2; v1 used idx order -> support ~always last)

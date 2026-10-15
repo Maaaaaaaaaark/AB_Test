@@ -22,6 +22,8 @@ chat-template is pinned):
 
 Tasks: `musique_local` (positive + paired negatives), `processbench` (4 subsets
 reported separately), and whole-question references `gsm8k`, `math`, `hotpotqa`.
+A separate descriptive plan, `math_solve`, measures single-model math solving
+(GSM8K + MATH) and never takes part in worker selection.
 
 **Where things run:** this Windows machine is the development machine only.
 All GPU inference runs on a Slurm cluster (`scripts/slurm/`). Local runs use a
@@ -164,6 +166,15 @@ weval report --plan holdout            # pass/fail of the selection nominee
 
 # 6. descriptive whole-question references (seed 0, never decide the worker)
 bash scripts/slurm/submit.sh reference
+
+# 7. standalone single-model math solving (descriptive, nominates nothing):
+#    200 GSM8K + 200 MATH (40 per level), seeds 0,1,2, the 4 candidates.
+#    Samples are frozen by `weval build`; check the exclusions first.
+weval estimate --source pilot --target math_solve
+for c in qwen3-4b-thinking-off qwen3-4b-thinking-on gemma-3-4b-it llama-3.2-3b-instruct; do
+  WEVAL_CONFIGS=$c bash scripts/slurm/submit.sh math_solve   # one job per model
+done
+weval report --plan math_solve         # after ALL jobs finished
 ```
 
 Slurm scripts read `scripts/slurm/env.sh` (partition, account, GPUs, time,
@@ -203,8 +214,11 @@ before cleanup.
   project macro-averages used for qualification.
 - GSM8K: official `####` extraction (first match), extraction failure rate
   reported; relaxed parser diagnostic only. MATH: boxed extraction +
-  vendored equivalence (missing gold boxed = unscorable, counted). HotpotQA:
-  official answer F1.
+  vendored equivalence (missing gold boxed = unscorable, counted; a looser
+  equivalence is reported as a diagnostic only). In `math_solve` the MATH
+  headline accuracy is re-weighted to the eligible post-exclusion pool's level
+  proportions; both raw and eligible level counts are stored in the manifest.
+  HotpotQA: official answer F1.
 - Cost: `Cproxy = 2 * N_text * (Tin + Tout)` (N_text from checkpoint
   safetensors headers, tied weights once); `Cweighted` null without sourced
   prices; `Efficiency_compute = mean(score) / mean(Cproxy/1e12)` per task;
@@ -228,7 +242,8 @@ python -m pytest tests -q
 Covers: reference resolution, leakage, aliases, strict distractors, review
 file, negative screening, official-scorer parity, reasoning parsing, missing
 answer scoring, runner resume/fingerprints/retries, splits, templates, cost
-params, seeds, renderers. No torch, no network.
+params, seeds, renderers, math_solve sampling/exclusions/report. No torch, no
+network.
 
 ## Policy
 

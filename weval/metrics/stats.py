@@ -178,3 +178,53 @@ def per_seed_means(values_by_group_seed: Dict[str, List[Tuple[int, float]]]) -> 
         for s, v in vals:
             by_seed.setdefault(s, []).append(v)
     return {s: sum(vs) / len(vs) for s, vs in sorted(by_seed.items())}
+
+
+def weighted_strata_bootstrap(
+    values_by_stratum_group: Dict[str, Dict[str, List[float]]],
+    weights: Dict[str, float],
+    n_boot: int = N_BOOT_DEFAULT,
+    seed: int = BOOTSTRAP_SEED_DEFAULT,
+) -> BootstrapCI:
+    """Post-stratified mean with a stratified clustered bootstrap.
+
+    estimate = sum_s w_s * mean(stratum s), with the weights renormalized over
+    the strata that have data. Inside every resample each stratum resamples
+    ITS OWN groups (seeds of a problem move together), so the CI reflects the
+    stratified design (e.g. MATH sampled with an equal number of problems per
+    difficulty level, re-weighted to the eligible post-exclusion pool's level
+    proportions).
+    """
+    rng = random.Random(seed)
+    strata = [s for s, sg in values_by_stratum_group.items()
+              if sg and weights.get(s, 0) > 0 and any(sg.values())]
+    total_w = sum(weights[s] for s in strata)
+
+    def weighted(by_sg: Dict[str, Dict[str, List[float]]]) -> Optional[float]:
+        if not strata or total_w <= 0:
+            return None
+        acc = 0.0
+        for s in strata:
+            pooled = [v for vs in by_sg[s].values() for v in vs]
+            if not pooled:
+                return None
+            acc += weights[s] / total_w * (sum(pooled) / len(pooled))
+        return acc
+
+    estimate = weighted(values_by_stratum_group)
+    n_groups = sum(len(values_by_stratum_group[s]) for s in strata)
+    n_values = sum(len(vs) for s in strata for vs in values_by_stratum_group[s].values())
+    samples: List[float] = []
+    for _ in range(n_boot):
+        resampled: Dict[str, Dict[str, List[float]]] = {}
+        for s in strata:
+            sg = values_by_stratum_group[s]
+            gs = list(sg)
+            picked = [rng.choice(gs) for _ in range(len(gs))]
+            resampled[s] = {f"{i}:{g}": sg[g] for i, g in enumerate(picked)}
+        v = weighted(resampled)
+        if v is not None:
+            samples.append(v)
+    if not samples:
+        return BootstrapCI(estimate, None, None, n_boot, n_groups, n_values, seed)
+    return BootstrapCI(estimate, _pct(samples, 0.025), _pct(samples, 0.975), n_boot, n_groups, n_values, seed)

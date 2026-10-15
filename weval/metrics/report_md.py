@@ -29,6 +29,137 @@ def _fmt_rate(x: Optional[float]) -> str:
     return f"{x * 100:.1f}%"
 
 
+MATH_LEVELS = ["Level 1", "Level 2", "Level 3", "Level 4", "Level 5"]
+
+
+def _cell_text(s: Any, limit: int = 80) -> str:
+    """Model / gold text inside a markdown table cell (pipes escaped, one line)."""
+    if s is None:
+        return "-"
+    t = " ".join(str(s).split())
+    if len(t) > limit:
+        t = t[: limit - 1] + "…"
+    return "`" + t.replace("|", "\\|").replace("`", "'") + "`"
+
+
+def _est(d: Optional[Dict[str, Any]]) -> Optional[float]:
+    return d.get("estimate") if isinstance(d, dict) else None
+
+
+def _no_answer(m: Dict[str, Any]) -> Optional[int]:
+    if not isinstance(m, dict) or "n_records" not in m:
+        return None
+    return int(m.get("n_missing_final") or 0) + int(
+        m.get("n_extraction_failures") if "n_extraction_failures" in m else (m.get("n_invalid_format") or 0)
+    )
+
+
+def _math_solve_summary(report: ReportData) -> List[str]:
+    """Cross-config overview for the single-model math solving plan."""
+    lines: List[str] = []
+    lines.append("## Summary - single-model math solving (descriptive)")
+    lines.append("")
+    lines.append(
+        "Each number is one model solving each problem on its own (no other agent). "
+        "This plan nominates nothing and has no thresholds. MATH accuracy (headline) is "
+        "re-weighted to the eligible post-exclusion pool's level proportions because the sample has an equal "
+        "number of problems per level; the plain sample mean is shown next to it. "
+        "Loose accuracy is a diagnostic second opinion on answer equivalence, never the score."
+    )
+    lines.append("")
+    lines.append("| config | GSM8K accuracy | MATH accuracy (level-weighted) | MATH unweighted | MATH loose (diagnostic) | complete |")
+    lines.append("|---|---|---|---|---|---|")
+    for config, tasks in report.per_config.items():
+        g = tasks.get("gsm8k") or {}
+        m = tasks.get("math") or {}
+        complete = all(
+            (t.get("completion") or {}).get("complete") for t in (g, m) if "n_records" in t
+        ) and "n_records" in g and "n_records" in m
+        lines.append(
+            f"| {config} | {_ci_cell(g.get('accuracy'))} | {_ci_cell(m.get('accuracy_level_weighted'))} | "
+            f"{_ci_cell(m.get('accuracy'))} | {_fmt(_est(m.get('loose_accuracy_diagnostic')), 3)} | "
+            f"{'yes' if complete else '**no**'} |"
+        )
+    lines.append("")
+    lines.append("| config | GSM8K no answer | GSM8K length stops | MATH no answer | MATH length stops | mean output tokens GSM8K | mean output tokens MATH |")
+    lines.append("|---|---|---|---|---|---|---|")
+    for config, tasks in report.per_config.items():
+        g = tasks.get("gsm8k") or {}
+        m = tasks.get("math") or {}
+
+        def _n(x: Optional[int], d: Dict[str, Any]) -> str:
+            if x is None:
+                return "-"
+            return f"{x} / {d.get('n_records')}"
+
+        lines.append(
+            f"| {config} | {_n(_no_answer(g), g)} | {_n(g.get('n_length_terminated'), g) if 'n_records' in g else '-'} | "
+            f"{_n(_no_answer(m), m)} | {_n(m.get('n_length_terminated'), m) if 'n_records' in m else '-'} | "
+            f"{_fmt(g.get('mean_generated_tokens'), 0)} | {_fmt(m.get('mean_generated_tokens'), 0)} |"
+        )
+    lines.append("")
+    lines.append("No answer = no final answer extracted (GSM8K: no `#### <number>` line; MATH: no `\\boxed{}`; "
+                 "or the reasoning never closed) - scored as wrong. Counts are observations (problems x seeds).")
+    lines.append("")
+    lines.append("### MATH accuracy by level")
+    lines.append("")
+    lines.append("| config | " + " | ".join(MATH_LEVELS) + " |")
+    lines.append("|---|" + "---|" * len(MATH_LEVELS))
+    for config, tasks in report.per_config.items():
+        per_level = (tasks.get("math") or {}).get("per_level") or {}
+        lines.append(f"| {config} | " + " | ".join(_ci_cell(per_level.get(l)) for l in MATH_LEVELS) + " |")
+    lines.append("")
+    return lines
+
+
+def _math_details(metrics: Dict[str, Any]) -> List[str]:
+    lines: List[str] = []
+    if metrics.get("accuracy_level_weighted"):
+        lines.append(f"| accuracy, level-weighted (headline) | {_ci_cell(metrics.get('accuracy_level_weighted'))} | - |")
+    lines.append(f"| loose accuracy (diagnostic only) | {_ci_cell(metrics.get('loose_accuracy_diagnostic'))} | - |")
+    lines.append(f"| unscorable (gold missing boxed) | {metrics.get('n_unscorable_gold_missing')} | - |")
+    lines.append(f"| missing final answer (open region / no boxed) | {metrics.get('n_missing_final')} | - |")
+    lines.append(f"| invalid format | {metrics.get('n_invalid_format')} | - |")
+    lines.append(f"| length stops (hit max_new_tokens) | {metrics.get('n_length_terminated')} | - |")
+    per_level = metrics.get("per_level") or {}
+    weights = metrics.get("level_weights") or {}
+    if per_level:
+        lines.append("")
+        lines.append("| level | problems | accuracy [95% CI] | weight (eligible pool) |")
+        lines.append("|---|---|---|---|")
+        for level in sorted(per_level):
+            d = per_level[level]
+            w = weights.get(level)
+            lines.append(f"| {level} | {d.get('n_items')} | {_ci_cell(d)} | {'-' if w is None else f'{w:.3f}'} |")
+    subjects = metrics.get("subject_counts") or {}
+    if subjects:
+        lines.append("")
+        lines.append("- subjects (problems scored): " + ", ".join(f"{k} {v}" for k, v in subjects.items()))
+    samp = metrics.get("sampling") or {}
+    if samp:
+        lines.append(
+            f"- sample: {samp.get('design')}, {samp.get('n_sampled')} of {samp.get('population')} test problems "
+            f"(seed {samp.get('seed')}); skipped while drawing: {samp.get('excluded_by_reason') or {}}"
+        )
+    lv = metrics.get("loose_vs_official") or {}
+    if lv:
+        lines.append(
+            f"- loose vs official: {lv.get('n_loose_correct_official_wrong')} observation(s) loose-correct but "
+            f"officially wrong (of {lv.get('n_observations')}). {lv.get('note')}"
+        )
+        ex = lv.get("examples") or []
+        if ex:
+            lines.append("")
+            lines.append("| item | seed | level | predicted | gold |")
+            lines.append("|---|---|---|---|---|")
+            for e in ex:
+                lines.append(
+                    f"| {e.get('item_id')} | {e.get('seed')} | {e.get('level')} | "
+                    f"{_cell_text(e.get('predicted'))} | {_cell_text(e.get('gold'))} |"
+                )
+    return lines
+
+
 def render_markdown(report: ReportData) -> str:
     lines: List[str] = []
     lines.append(f"# Evaluation report - plan: {report.plan}")
@@ -42,6 +173,9 @@ def render_markdown(report: ReportData) -> str:
         for n in report.notes:
             lines.append(f"- {n}")
         lines.append("")
+
+    if report.plan == "math_solve":
+        lines.extend(_math_solve_summary(report))
 
     for config, tasks in report.per_config.items():
         lines.append(f"## {config}")
@@ -105,7 +239,8 @@ def render_markdown(report: ReportData) -> str:
             else:
                 lines.append("| metric | estimate | 95% CI |")
                 lines.append("|---|---|---|")
-                lines.append(f"| accuracy | {_ci_cell(metrics.get('accuracy'))} | - |")
+                acc_label = "accuracy (unweighted sample mean)" if metrics.get("accuracy_level_weighted") else "accuracy"
+                lines.append(f"| {acc_label} | {_ci_cell(metrics.get('accuracy'))} | - |")
                 if metrics.get("em"):
                     lines.append(f"| EM | {_ci_cell(metrics.get('em'))} | - |")
                 if task == "gsm8k":
@@ -113,9 +248,10 @@ def render_markdown(report: ReportData) -> str:
                     lines.append(f"| extraction failure rate (official regex) | {_fmt_rate(metrics.get('extraction_failure_rate'))} | - |")
                     lines.append(f"| relaxed accuracy (diagnostic) | {_ci_cell(metrics.get('relaxed_accuracy'))} | - |")
                     lines.append(f"| extraction failures rescued by relaxed parser (diagnostic) | {metrics.get('relaxed_would_rescue')} | - |")
+                    lines.append(f"| missing final answer (reasoning never closed) | {metrics.get('n_missing_final')} | - |")
+                    lines.append(f"| length stops (hit max_new_tokens) | {metrics.get('n_length_terminated')} | - |")
                 if task == "math":
-                    lines.append(f"| unscorable (gold missing boxed) | {metrics.get('n_unscorable_gold_missing')} | - |")
-                    lines.append(f"| missing final answer (open region / no boxed) | {metrics.get('n_missing_final')} | - |")
+                    lines.extend(_math_details(metrics))
                 if task == "hotpotqa":
                     af = metrics.get("answer_format") or {}
                     lines.append(f"| answer format: Answer-line / single-line / inline-marker / invalid / missing | "
@@ -135,6 +271,9 @@ def render_markdown(report: ReportData) -> str:
                     elif task == "processbench":
                         metric_name = "macro F1"
                         value = (sm.get("macro_f1") or {}).get("estimate")
+                    elif task == "math" and sm.get("accuracy_level_weighted"):
+                        metric_name = "accuracy (level-weighted)"
+                        value = (sm.get("accuracy_level_weighted") or {}).get("estimate")
                     else:
                         metric_name = "accuracy/F1"
                         value = (sm.get("accuracy") or {}).get("estimate")
@@ -171,7 +310,12 @@ def render_markdown(report: ReportData) -> str:
             for metric, pairs in metrics.items():
                 if len(metrics) > 1 or metric != "primary":
                     direction = "lower is better" if metric == "false_abstention_rate" else "higher is better"
-                    lines.append(f"#### {metric} ({direction})")
+                    label = metric
+                    if metric == "primary" and "accuracy_level_weighted" in metrics:
+                        label = "accuracy, unweighted sample mean"
+                    elif metric == "accuracy_level_weighted":
+                        label = "accuracy, level-weighted (headline)"
+                    lines.append(f"#### {label} ({direction})")
                     lines.append("")
                 lines.append("| pair | mean diff | 95% CI |")
                 lines.append("|---|---|---|")
@@ -180,6 +324,13 @@ def render_markdown(report: ReportData) -> str:
                 lines.append("")
 
     rec = report.recommendation
+    role_data = bool(rec) and (
+        any(e.get("answerable_f1") is not None for e in rec.get("evidence_worker_candidates", []))
+        or any(m.get("macro_f1") is not None for m in rec.get("math_checker_candidates", []))
+    )
+    if rec and rec.get("mode") == "informational_no_nomination" and not role_data:
+        # plan without role tasks (e.g. math_solve, reference): nothing to show
+        rec = None
     if rec:
         mode = rec.get("mode")
         stage = rec.get("stage")

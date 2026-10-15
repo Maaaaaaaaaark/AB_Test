@@ -73,14 +73,15 @@ def estimate(
 
     per_cell: Dict[str, Dict[str, Any]] = {}
     warnings: List[str] = []
-    for config in plan.configs:
+    # only configurations and tasks the TARGET plan actually runs
+    for config in [c for c in plan.configs if c in target.configs]:
         n_text = _n_text_for(cfg, out_dir, config)
         if n_text is None:
             warnings.append(
                 f"{config}: no artifacts/model_params/{config}.json - Cproxy "
                 f"excluded from estimates (run `weval inspect-params` on the cluster)"
             )
-        for task in plan.tasks:
+        for task in [t for t in plan.tasks if t in target.tasks]:
             recs = _records(out_dir, source_plan, config, task)
             key = f"{config}/{task}"
             if not recs:
@@ -123,6 +124,16 @@ def estimate(
                 cell["mean_cproxy_per_item"] = mean_cproxy
                 cell["est_total_cproxy"] = mean_cproxy * n_items * n_seeds_target
                 cell["est_total_cproxy_tflops_ish"] = mean_cproxy * n_items * n_seeds_target / 1e12
+            # source budget vs target budget: records that hit the token limit
+            # make the extrapolation a LOWER bound (e.g. pilot MATH at 4096
+            # tokens vs math_solve at 8192)
+            n_len = sum(1 for r in recs if r.get("finish_reason") == "length")
+            cell["n_source_length_stops"] = n_len
+            if n_len:
+                warnings.append(
+                    f"{key}: {n_len}/{len(recs)} source records stopped at the token limit; "
+                    "wall time / tokens for this cell are a lower bound"
+                )
             per_cell[key] = cell
 
     return {

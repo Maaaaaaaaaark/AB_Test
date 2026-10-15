@@ -1,0 +1,17 @@
+# Standalone single-model math solving (descriptive comparison).
+# Each configuration solves every problem ON ITS OWN - one model, one
+# problem, no other agent. 200 GSM8K main-test problems (simple random) and
+# 200 original MATH test problems (40 per difficulty level), 3 seeds, the
+# frozen GSM8K / MATH prompts and budgets of configs/tasks.yaml.
+# Never nominates a worker, has no thresholds and no holdout. Problems are
+# disjoint from every ProcessBench problem, from the reference / pilot
+# subsets and from the GSM8K prompt exemplar (exact or near-duplicate).
+stage: math_solve
+configs: [qwen3-4b-thinking-off, qwen3-4b-thinking-on, gemma-3-4b-it, llama-3.2-3b-instruct]
+tasks: [gsm8k, math]
+require_approved_negatives: false
+require_locked_templates: true
+require_locked_thresholds: false
+max_attempts_per_item: 3
+deadline_seconds: 3600
+report_incomplete_on_unresolved: true

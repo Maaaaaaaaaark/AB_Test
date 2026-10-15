@@ -33,6 +33,16 @@ _vendored = _ilu.module_from_spec(_spec)
 _spec.loader.exec_module(_vendored)
 is_equiv = _vendored.is_equiv
 
+from .math_loose import MATH_LOOSE_VERSION, loose_equiv  # noqa: E402 - diagnostic only
+
+
+def _loose(pred: str, gold: str) -> bool:
+    """Diagnostic check; it can never break scoring."""
+    try:
+        return loose_equiv(pred, gold, is_equiv)
+    except Exception:  # noqa: BLE001
+        return False
+
 
 def score_math(item: Dict[str, Any], parsed: ParsedAnswer) -> ScoreRecord:
     gold = item["gold"].get("boxed_answer")
@@ -56,6 +66,8 @@ def score_math(item: Dict[str, Any], parsed: ParsedAnswer) -> ScoreRecord:
                 "gold_boxed": gold,
                 "correct": False,
                 "reason": "no_boxed_in_answer",
+                "loose_correct": False,
+                "loose_checker_version": MATH_LOOSE_VERSION,
                 "scorer_version": MATH_SCORER_VERSION,
             },
         )
@@ -78,6 +90,9 @@ def score_math(item: Dict[str, Any], parsed: ParsedAnswer) -> ScoreRecord:
             "predicted_boxed": str(pred),
             "gold_boxed": str(gold),
             "correct": equiv,
+            # DIAGNOSTIC second opinion (never the score): see math_loose.py
+            "loose_correct": bool(equiv or _loose(str(pred), str(gold))),
+            "loose_checker_version": MATH_LOOSE_VERSION,
             "scorer_version": MATH_SCORER_VERSION,
         },
     )

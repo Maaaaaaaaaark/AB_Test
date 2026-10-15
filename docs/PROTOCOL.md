@@ -164,6 +164,68 @@ gold boxed answer.
    are only as good as the official heuristic.
 4. MATH-500 (HuggingFaceH4/MATH-500) is forbidden by spec; the 5000-record
    original test split is used (7500/5000 counts verified).
+5. *Gold extraction fix (adapter math-adapter-v3, 2026-10-15).* Up to v2 the
+   gold answer was taken with the regex `\\boxed\{([^}]*)\}`, which stops at
+   the first `}`: `\boxed{\frac{1}{2}}` gave the gold `\frac{1`, so every
+   correct fraction / root / exponent answer was scored wrong. v3 takes the
+   LAST `\boxed{...}` / `\fbox{...}` with nested braces matched, as the
+   official harness does (`last_boxed_only_string` + `remove_boxed`), and
+   accepts the `\boxed 5` form. Item selection does not depend on the gold,
+   so no manifest changes membership; reports re-score from the manifests, so
+   re-running `weval build` + `weval report` corrects earlier MATH numbers
+   (pilot and reference) without new generations.
+6. *Loose equivalence (diagnostic only, `math-loose-v1`).* The official
+   checker compares normalized strings, so `0.25` vs `\frac{1}{4}` or
+   `2\pi` vs `\pi\cdot 2` count as wrong. A looser second opinion (wider
+   normalization, numeric evaluation of simple expressions, element-wise
+   tuples, choice letters) is stored per record and reported as
+   `loose_accuracy_diagnostic` with the disagreeing cases listed for spot
+   checks. It never changes the score.
+
+## Single-model math solving (plan `math_solve`, descriptive)
+
+**Purpose.** How well each configuration solves math problems ON ITS OWN:
+one model, one problem, no other agent and no checker. It complements the
+ProcessBench checking task (judging someone else's solution) and is fully
+decoupled from worker selection: the plan nominates nothing, has no
+thresholds and no holdout, and its results never feed the selection rules.
+
+**Data (frozen by `weval build`, before any output is seen):**
+- GSM8K: official main test split (1,319): 200 problems, simple random.
+- MATH: original test split (5,000): stratified by level, 40 problems from
+  each of Level 1-5 (200). Records with another level value are excluded and
+  counted. Subject counts are recorded in the manifest and the report.
+- Exclusions (exact after `normalize_for_matching`, or near-duplicate with
+  token Jaccard >= 0.95 - here the near-duplicate flag DOES exclude): every
+  ProcessBench problem (all subsets, all records), every problem of the
+  GSM8K / MATH reference subsets (they contain the pilot items), and the
+  GSM8K prompt's worked example. Candidates that duplicate an already drawn
+  problem are skipped too. Every skipped candidate is listed with its reason
+  in `artifacts/manifests/math_solve_exclusions.json`.
+- Item ids are `test-<index in the pinned split>`; sampler
+  `math-solve-sampler-v1`, seed `split_seeds.math_solve_order`.
+- The manifest records both the raw 5,000-question level counts and the level
+  counts after the external overlap exclusions above. Headline weights use the
+  latter because excluded questions have zero probability of entering this
+  experiment.
+
+**Run:** the 4 candidate configurations, seeds 0,1,2, the same prompts and
+budgets as everywhere else (GSM8K 4096, MATH 8192 new tokens), official
+scoring. Runs can be split per configuration (`--configs`), records land in
+one store, the report covers the whole plan.
+
+**Report:**
+- GSM8K accuracy (official), extraction failures, missing final, length stops.
+- MATH accuracy, headline = **level-weighted**: the per-level accuracies
+  weighted by the eligible post-exclusion pool's level proportions (the
+  equal-allocation sample over-represents the easy levels). The plain sample mean is shown next to
+  it. Per-level accuracy, subject counts, answer failures, length stops, and
+  the loose-equivalence diagnostic with examples.
+- CIs: problems are the clusters (all seeds of a problem move together);
+  the level-weighted CI resamples problems within each level (stratified).
+- Paired config differences on identical problems; for MATH both the plain
+  and the level-weighted difference.
+- Mean output tokens per configuration and task.
 
 ## HotpotQA (whole-question reference)
 
@@ -295,7 +357,10 @@ reported, not hidden).
   (above), pilot from groups excluded from selection.
 - Whole-question references: frozen 100-item subsets per dataset (seed 0,
   fixed ordering); problems used in local debug/selection are excluded and
-  the exclusions are reported.
+  the exclusions are reported. The existing reference plan remains immutable
+  and still contains HotpotQA, GSM8K and MATH. `math_solve` is a separate plan;
+  adding it does not require rerunning reference.
+- math_solve samples: see "Single-model math solving" above.
 - Cross-dataset check: exact matches under normalization (digits and
   operators preserved; whitespace adjacent to a math operator is
   insignificant, so `"x + 2 = 5"` and `"x+2=5"` match, while other

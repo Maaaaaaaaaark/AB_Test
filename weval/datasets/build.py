@@ -33,6 +33,9 @@ class BuildResult:
     leakage: Dict[str, Any] = field(default_factory=dict)
     blocked: Dict[str, str] = field(default_factory=dict)
     registry: Dict[str, Any] = field(default_factory=dict)
+    # (subset, record id, problem text) of EVERY ProcessBench record; used for
+    # math_solve exclusions only, not serialized
+    processbench_problems: List[Tuple[str, str, str]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -194,6 +197,9 @@ def build_processbench_splits(
     except Exception as e:  # noqa: BLE001 - surfaced in blocked[]
         res.blocked["processbench"] = f"could not load ProcessBench: {e}"
         return res
+    for subset, recs in data.items():
+        for i, r in enumerate(recs):
+            res.processbench_problems.append((subset, str(r.get("id", i)), str(r.get("problem") or "")))
     quotas = pb_adapter.processbench_quotas(cfg)
     for subset in pb_adapter.PROCESSBENCH_SUBSETS:
         parts, info = pb_adapter.partition_records(data[subset], quotas, cfg.splits["split_seeds"]["processbench_group_order"])
@@ -322,6 +328,118 @@ def build_references(
     return res
 
 
+def _reference_texts(out_dir: Path, dataset: str, field_name: str) -> List[Tuple[str, str]]:
+    """(item_id, text) of a reference manifest written earlier in this build."""
+    path = out_dir / "manifests" / f"{dataset}_reference.json"
+    if not path.exists():
+        return []
+    with open(path, encoding="utf-8") as f:
+        manifest = json.load(f)
+    return [(str(it["item_id"]), str(it.get(field_name) or "")) for it in manifest["items"]]
+
+
+def build_math_solve_sets(
+    cfg: ConfigBundle, data_dir: Path, out_dir: Path,
+    provenance: Dict[str, Optional[DatasetProvenance]],
+    processbench_problems: List[Tuple[str, str, str]],
+) -> BuildResult:
+    """Frozen samples for the standalone single-model math solving plan
+    (see weval/datasets/math_solve.py for the sampling rules)."""
+    from . import math_solve as ms
+
+    res = BuildResult()
+    sizes = cfg.splits.get("stages", {}).get("math_solve")
+    if not sizes:
+        return res  # plan not configured
+    seed = int(cfg.splits.get("split_seeds", {}).get("math_solve_order", 20261013))
+    cache_dir = str(data_dir / "hf_cache")
+    if not processbench_problems:
+        res.blocked["math_solve"] = (
+            "ProcessBench could not be loaded, so its problems cannot be excluded; "
+            "math_solve manifests not written"
+        )
+        return res
+
+    def _processbench_index() -> "ms.DuplicateIndex":
+        # every ProcessBench problem (all subsets, all records)
+        idx = ms.DuplicateIndex()
+        for subset, rid, text in processbench_problems:
+            idx.add("processbench", f"{subset}:{rid}", text)
+        return idx
+
+    exclusion_counts = {"processbench_problems": len(processbench_problems)}
+    report: Dict[str, Any] = {"sampler_version": ms.MATH_SOLVE_SAMPLER_VERSION, "seed": seed}
+
+    # GSM8K
+    try:
+        gsm_records = gsm8k_adapter.load_gsm8k_main_test(cache_dir=cache_dir)
+        gsm_ex = _processbench_index()
+        ref = _reference_texts(out_dir, "gsm8k", "question")
+        for rid, text in ref:
+            gsm_ex.add("reference_or_pilot", f"gsm8k_reference:{rid}", text)
+        exemplar = getattr(cfg.task("gsm8k"), "exemplar", None) if "gsm8k" in cfg.tasks else None
+        if exemplar:
+            gsm_ex.add("prompt_exemplar", "gsm8k_train_exemplar", str(exemplar["question"]))
+        sample = ms.sample_gsm8k(gsm_records, int(sizes["gsm8k_items"]), seed, gsm_ex)
+        items = []
+        for idx in sample.chosen:
+            [it] = gsm8k_adapter.build_items([gsm_records[idx]], "math_solve")
+            d = it.to_dict()
+            d["item_id"] = f"test-{idx}"
+            d["group_id"] = f"gsm8k:test-{idx}"
+            items.append(d)
+        manifest = _manifest("gsm8k", "math_solve", items, cfg, provenance.get("gsm8k"))
+        manifest["sampling"] = {
+            "design": "simple_random", "sampler_version": ms.MATH_SOLVE_SAMPLER_VERSION,
+            "seed": seed, **sample.counts,
+            "n_reference_items_excluded_against": len(ref),
+        }
+        path = out_dir / "manifests" / "gsm8k_math_solve.json"
+        _write_json(path, manifest)
+        res.manifests["gsm8k_math_solve"] = path
+        res.coverage["gsm8k_math_solve"] = manifest["sampling"]
+        report["gsm8k"] = {**manifest["sampling"], "excluded": sample.excluded}
+    except Exception as e:  # noqa: BLE001
+        res.blocked["gsm8k_math_solve"] = f"could not build the GSM8K math_solve sample: {e}"
+
+    # MATH
+    try:
+        math_records = math_adapter.load_math(cache_dir=cache_dir)["test"]
+        math_ex = _processbench_index()
+        ref = _reference_texts(out_dir, "math", "problem")
+        for rid, text in ref:
+            math_ex.add("reference_or_pilot", f"math_reference:{rid}", text)
+        sample = ms.sample_math_stratified(math_records, int(sizes["math_per_level"]), seed, math_ex)
+        items = []
+        for idx in sample.chosen:
+            [it] = math_adapter.build_items([math_records[idx]], "math_solve")
+            d = it.to_dict()
+            d["item_id"] = f"test-{idx}"
+            d["group_id"] = f"math:test-{idx}"
+            items.append(d)
+        n_no_gold = sum(1 for d in items if not d["gold"].get("boxed_answer"))
+        manifest = _manifest("math", "math_solve", items, cfg, provenance.get("math"))
+        manifest["sampling"] = {
+            "design": "stratified_equal_per_level", "sampler_version": ms.MATH_SOLVE_SAMPLER_VERSION,
+            "seed": seed, **sample.counts,
+            "level_weights": ms.level_weights(sample.counts["eligible_level_counts"]),
+            "level_weights_source": "eligible_level_counts_after_external_exclusions",
+            "n_reference_items_excluded_against": len(ref),
+            "n_items_without_gold_boxed": n_no_gold,
+        }
+        path = out_dir / "manifests" / "math_math_solve.json"
+        _write_json(path, manifest)
+        res.manifests["math_math_solve"] = path
+        res.coverage["math_math_solve"] = manifest["sampling"]
+        report["math"] = {**manifest["sampling"], "excluded": sample.excluded}
+    except Exception as e:  # noqa: BLE001
+        res.blocked["math_math_solve"] = f"could not build the MATH math_solve sample: {e}"
+
+    report["exclusion_sources"] = exclusion_counts
+    _write_json(out_dir / "manifests" / "math_solve_exclusions.json", report)
+    return res
+
+
 def _normalized_q(text: str) -> str:
     from .normalization import normalize_for_matching
 
@@ -361,6 +479,13 @@ def build_all(cfg: ConfigBundle, data_dir: Path, out_dir: Path, provenance_map: 
     res.manifests.update(ref_res.manifests)
     res.coverage.update(ref_res.coverage)
     res.blocked.update(ref_res.blocked)
+
+    # Standalone single-model math solving samples (after the references, whose
+    # problems they exclude).
+    ms_res = build_math_solve_sets(cfg, data_dir, out_dir, provenance_map, pb_res.processbench_problems)
+    res.manifests.update(ms_res.manifests)
+    res.coverage.update(ms_res.coverage)
+    res.blocked.update(ms_res.blocked)
 
     _write_json(out_dir / "build_result.json", res.to_dict())
     return res

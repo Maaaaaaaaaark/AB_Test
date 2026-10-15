@@ -147,9 +147,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     seeds = [int(s) for s in args.seeds.split(",")] if args.seeds else None
     backend_factory = _backend_factory(args, cfg)
     try:
+        only = [c.strip() for c in args.configs.split(",") if c.strip()] if args.configs else None
         summary = run_plan(
             cfg, args.plan, backend_factory, _out_dir(args.root),
-            seeds=seeds, resume=not args.no_resume,
+            seeds=seeds, resume=not args.no_resume, only_configs=only,
         )
     except PlanGateError as e:
         print(f"plan gating blocked: {e}", file=sys.stderr)
@@ -264,6 +265,9 @@ def cmd_estimate(args: argparse.Namespace) -> int:
 # argument parser
 # --------------------------------------------------------------------------
 
+PLAN_CHOICES = ["smoke", "pilot", "selection", "holdout", "reference", "math_solve"]
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="weval",
@@ -286,19 +290,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_build)
 
     sp = sub.add_parser("run", help="generate predictions for a plan (gated)")
-    sp.add_argument("--plan", required=True, choices=["smoke", "pilot", "selection", "holdout", "reference"])
+    sp.add_argument("--plan", required=True, choices=PLAN_CHOICES)
     sp.add_argument("--backend", default="scripted", choices=["scripted", "transformers"])
     sp.add_argument("--snapshots", type=Path, default=Path("models"),
                     help="transformers: dir with one snapshot subdir per config name")
     sp.add_argument("--device", default="auto")
     sp.add_argument("--seeds", default=None, help="comma-separated override (default: plan seeds)")
+    sp.add_argument("--configs", default=None,
+                    help="comma-separated subset of the plan's configurations to run "
+                         "(default: all; e.g. one Slurm job per model)")
     sp.add_argument("--script", default=None, help="scripted: JSONL script file (item_id -> text)")
     sp.add_argument("--default-text", default=None, help="scripted: default output text")
     sp.add_argument("--no-resume", action="store_true")
     sp.set_defaults(func=cmd_run)
 
     sp = sub.add_parser("report", help="re-parse + re-score predictions and write report.json/report.md")
-    sp.add_argument("--plan", required=True, choices=["smoke", "pilot", "selection", "holdout", "reference"])
+    sp.add_argument("--plan", required=True, choices=PLAN_CHOICES)
     sp.add_argument("--n-boot", type=int, default=1000)
     sp.set_defaults(func=cmd_report)
 
@@ -322,7 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("estimate", help="extrapolate pilot/smoke measurements to a target plan")
     sp.add_argument("--source", required=True, choices=["smoke", "pilot"])
-    sp.add_argument("--target", required=True, choices=["pilot", "selection", "holdout"])
+    sp.add_argument("--target", required=True, choices=["pilot", "selection", "holdout", "reference", "math_solve"])
     sp.add_argument("--n-boot", type=int, default=1000)
     sp.set_defaults(func=cmd_estimate)
 

@@ -37,7 +37,9 @@ MATH_CONFIGS = [
     "prealgebra",
     "precalculus",
 ]
-ADAPTER_VERSION = "math-adapter-v2"  # v1 pinned the disabled hendrycks/competition_math
+# v1 pinned the disabled hendrycks/competition_math; v3 fixes nested-brace
+# gold extraction (v2 truncated \boxed{\frac{1}{2}} to "\frac{1").
+ADAPTER_VERSION = "math-adapter-v3"
 MATH_EXPECTED_COUNTS = {"train": 7500, "test": 5000}
 MATH_REQUIRED_FIELDS = {"problem", "solution", "level", "type"}
 
@@ -96,16 +98,43 @@ def load_math(cache_dir: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]
 
 
 def extract_boxed_gold(solution: str) -> Optional[str]:
-    """Gold answer extraction: last \\boxed{...} in the official solution.
+    """Gold answer extraction: last \\boxed{...} (or \\fbox{...}) in the
+    official solution, with NESTED braces handled like the official harness
+    (hendrycks/math last_boxed_only_string + remove_boxed).
+
+    adapter v2 used the regex ``\\boxed\\{([^}]*)\\}``, which stops at the
+    first closing brace: ``\\boxed{\\frac{1}{2}}`` gave the gold ``\\frac{1``
+    and every correct fraction / sqrt / exponent answer was scored wrong.
+    The "\\boxed 5" space form (no braces) is also accepted.
 
     Returns None when no boxed answer exists (recorded, not silently skipped).
     """
-    import re
-
-    matches = re.findall(r"\\boxed\{([^}]*)\}", solution)
-    if not matches:
+    if not solution:
         return None
-    return matches[-1].strip()
+    idx_boxed = solution.rfind("\\boxed")
+    idx_fbox = solution.rfind("\\fbox")
+    idx = max(idx_boxed, idx_fbox)
+    if idx < 0:
+        return None
+    marker = "\\boxed" if idx == idx_boxed else "\\fbox"
+    rest = solution[idx + len(marker):]
+    if rest.startswith(" ") and not rest.lstrip().startswith("{"):
+        # "\boxed 5" form: the answer runs to the next "$" or end of text
+        value = rest.strip().split("$", 1)[0].strip()
+        return value or None
+    rest = rest.lstrip()
+    if not rest.startswith("{"):
+        return None
+    depth = 0
+    for i, ch in enumerate(rest):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                value = rest[1:i].strip()
+                return value or None
+    return None  # unbalanced braces: not extractable
 
 
 def build_items(records: List[Dict[str, Any]], split: str, start: int = 0, n: Optional[int] = None) -> List[MathItem]:

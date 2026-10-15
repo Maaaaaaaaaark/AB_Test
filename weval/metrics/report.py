@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..config import ConfigBundle, PlanCfg
 from ..parsing import PARSERS, PARSER_VERSIONS
 from ..parsing.reasoning import merge_stop_strings
-from ..run.manifests import manifest_items_for_task
+from ..run.manifests import manifest_items_for_task, manifest_sampling
 from ..run.store import PredictionStore
 from ..scoring import SCORERS, SCORER_VERSIONS
 from ..scoring.processbench_score import subset_error_correct_f1
@@ -41,9 +41,10 @@ from .stats import (
     group_bootstrap,
     macro_group_bootstrap,
     paired_difference,
+    weighted_strata_bootstrap,
 )
 
-REPORT_VERSION = "report-v4"
+REPORT_VERSION = "report-v5"
 
 # Only this plan stage nominates role workers; holdout only checks the
 # selection nominee; every other stage is informational.
@@ -300,6 +301,87 @@ def _aggregate_processbench(records: List[Dict[str, Any]], items_by_id: Dict[str
     }
 
 
+MATH_LEVELS = ["Level 1", "Level 2", "Level 3", "Level 4", "Level 5"]
+N_LOOSE_EXAMPLES = 20
+
+
+def _aggregate_math(
+    records: List[Dict[str, Any]],
+    items_by_id: Dict[str, Dict[str, Any]],
+    sampling: Optional[Dict[str, Any]] = None,
+    n_boot: int = N_BOOT_DEFAULT,
+) -> Dict[str, Any]:
+    """MATH: official accuracy (primary), per-level accuracy, the accuracy
+    re-weighted to the eligible post-exclusion pool's level proportions
+    (headline for stratified samples), subject counts, answer-failure counts and the loose-equivalence
+    DIAGNOSTIC (disagreements listed for spot checks; never the score)."""
+    base = _aggregate_simple("math", records, n_boot=n_boot)
+    sampling = sampling or {}
+    by_level_group: Dict[str, Dict[str, List[float]]] = {}
+    loose_by_group: Dict[str, List[float]] = {}
+    subjects: Dict[str, int] = {}
+    seen_items: set = set()
+    disagreements: List[Dict[str, Any]] = []
+    n_loose_only = n_official_only = 0
+    for r in records:
+        if r.get("value") is None:
+            continue
+        item = items_by_id.get(r["item_id"]) or {}
+        level = str(item.get("level") or (item.get("gold") or {}).get("level") or "unknown")
+        by_level_group.setdefault(level, {}).setdefault(r["group_id"], []).append(float(r["value"]))
+        if r["item_id"] not in seen_items:
+            seen_items.add(r["item_id"])
+            subj = str(item.get("type") or "unknown")
+            subjects[subj] = subjects.get(subj, 0) + 1
+        d = r.get("detail") or {}
+        loose = bool(d.get("loose_correct"))
+        loose_by_group.setdefault(r["group_id"], []).append(1.0 if loose else 0.0)
+        official = float(r["value"]) >= 1.0
+        if loose and not official:
+            n_loose_only += 1
+            if len(disagreements) < N_LOOSE_EXAMPLES:
+                disagreements.append({
+                    "item_id": r["item_id"], "seed": r.get("seed"), "level": level,
+                    "predicted": d.get("predicted_boxed"), "gold": d.get("gold_boxed"),
+                })
+        elif official and not loose:
+            n_official_only += 1  # should not happen (loose includes official)
+    per_level: Dict[str, Any] = {}
+    for level in sorted(by_level_group):
+        sg = by_level_group[level]
+        ci = group_bootstrap(sg, n_boot=n_boot).to_dict()
+        ci["n_items"] = len(sg)
+        per_level[level] = ci
+    weights = sampling.get("level_weights") or {}
+    weighted = None
+    if weights and all(l in by_level_group for l in MATH_LEVELS):
+        weighted = weighted_strata_bootstrap(
+            {l: by_level_group[l] for l in MATH_LEVELS}, weights, n_boot=n_boot
+        ).to_dict()
+    n = len(records)
+    base.update({
+        "accuracy_unweighted_note": (
+            "plain mean over the sample; for a sample stratified with an equal number "
+            "of problems per level use accuracy_level_weighted as the MATH accuracy"
+        ) if weights else None,
+        "accuracy_level_weighted": weighted,
+        "level_weights": weights or None,
+        "per_level": per_level,
+        "subject_counts": dict(sorted(subjects.items())),
+        "n_invalid_format": sum(1 for r in records if r.get("status") == "invalid_format"),
+        "n_length_terminated": sum(1 for r in records if r.get("finish_reason") == "length"),
+        "loose_accuracy_diagnostic": group_bootstrap(loose_by_group, n_boot=n_boot).to_dict(),
+        "loose_vs_official": {
+            "n_observations": n,
+            "n_loose_correct_official_wrong": n_loose_only,
+            "n_official_correct_loose_wrong": n_official_only,
+            "examples": disagreements,
+            "note": "diagnostic only; spot-check the examples - the official score is the MATH accuracy",
+        },
+    })
+    return base
+
+
 def _aggregate_simple(task: str, records: List[Dict[str, Any]], n_boot: int = N_BOOT_DEFAULT) -> Dict[str, Any]:
     by_group: Dict[str, List[float]] = {}
     extra: Dict[str, Any] = {}
@@ -316,6 +398,8 @@ def _aggregate_simple(task: str, records: List[Dict[str, Any]], n_boot: int = N_
                 1.0 if r.get("detail", {}).get("relaxed_matches_gold") else 0.0
             )
         extra = {
+            "n_missing_final": sum(1 for r in records if r.get("status") == "missing_final"),
+            "n_length_terminated": sum(1 for r in records if r.get("finish_reason") == "length"),
             "extraction_failure_rate": failures / n if n else None,
             "format_compliance_rate": (n - failures) / n if n else None,
             "n_extraction_failures": failures,
@@ -369,6 +453,8 @@ def build_report(
     paired_inputs: Dict[
         Tuple[str, str], Dict[str, Dict[str, Dict[str, float]]]
     ] = {}
+    # task -> (group_id -> stratum, stratum weights) for stratified samples
+    paired_strata: Dict[str, Tuple[Dict[str, str], Dict[str, float]]] = {}
 
     for config_name in plan.configs:
         model_cfg = cfg.model(config_name)
@@ -427,6 +513,16 @@ def build_report(
                 metrics = _aggregate_musique(cfg, scored, items_by_id, n_boot=n_boot)
             elif task == "processbench":
                 metrics = _aggregate_processbench(scored, items_by_id, n_boot=n_boot)
+            elif task == "math":
+                sampling = manifest_sampling(out_dir, plan_name, task)
+                metrics = _aggregate_math(scored, items_by_id, sampling, n_boot=n_boot)
+                if sampling:
+                    metrics["sampling"] = {k: v for k, v in sampling.items() if k != "excluded"}
+                if sampling.get("level_weights"):
+                    paired_strata["math"] = (
+                        {it["group_id"]: str(it.get("level")) for it in items},
+                        sampling["level_weights"],
+                    )
             else:
                 metrics = _aggregate_simple(task, scored, n_boot=n_boot)
             per_seed: Dict[str, Any] = {}
@@ -440,11 +536,17 @@ def build_report(
                     per_seed[str(seed)] = _aggregate_processbench(
                         seed_scored, items_by_id, n_boot=0
                     )
+                elif task == "math":
+                    per_seed[str(seed)] = _aggregate_math(
+                        seed_scored, items_by_id, manifest_sampling(out_dir, plan_name, task), n_boot=0
+                    )
                 else:
                     per_seed[str(seed)] = _aggregate_simple(task, seed_scored, n_boot=0)
             metrics["n_records"] = len(records)
             metrics["seeds"] = seeds
             metrics["per_seed"] = per_seed
+            gen_tokens = [int(r.get("n_generated_tokens") or 0) for r in records]
+            metrics["mean_generated_tokens"] = (sum(gen_tokens) / len(gen_tokens)) if gen_tokens else None
             expected_observations = len(runnable_items) * len(seeds)
             observed_keys = {
                 (str(r.get("item_id")), int(r.get("seed", -1)))
@@ -534,7 +636,7 @@ def build_report(
             report.compute[config_name][task] = agg
 
     # ---- paired differences (same items across configs) ----
-    report.paired = _paired_differences(plan, paired_inputs, n_boot)
+    report.paired = _paired_differences(plan, paired_inputs, n_boot, paired_strata)
 
     # ---- recommendation ----
     report.recommendation = _recommendation(cfg, plan, report, out_dir)
@@ -564,8 +666,13 @@ def _paired_differences(
         Tuple[str, str], Dict[str, Dict[str, Dict[str, float]]]
     ],
     n_boot: int,
+    strata: Optional[Dict[str, Tuple[Dict[str, str], Dict[str, float]]]] = None,
 ) -> Dict[str, Any]:
+    """Paired A - B differences per task and metric. For a task sampled by
+    strata (MATH in math_solve) the primary metric is also given re-weighted to
+    the eligible-pool stratum proportions ("accuracy_level_weighted")."""
     configs = list(plan.configs)
+    strata = strata or {}
     out: Dict[str, Any] = {}
     for task in plan.tasks:
         metric_names = sorted({
@@ -592,7 +699,46 @@ def _paired_differences(
                         "n_observations_missing_in_b": missing_b,
                     }
             out[task][metric] = pairs
+        if task in strata and "primary" in out[task]:
+            stratum_of, weights = strata[task]
+            primary = {c: paired_inputs.get((c, task), {}).get("primary", {}) for c in configs}
+            wpairs: Dict[str, Any] = {}
+            for i in range(len(configs)):
+                for j in range(i + 1, len(configs)):
+                    a, b = configs[i], configs[j]
+                    key = f"{a} - {b}"
+                    wpairs[key] = {
+                        **_weighted_paired_difference(
+                            primary[a], primary[b], stratum_of, weights, n_boot
+                        ).to_dict(),
+                        "n_observations_missing_in_a": out[task]["primary"][key]["n_observations_missing_in_a"],
+                        "n_observations_missing_in_b": out[task]["primary"][key]["n_observations_missing_in_b"],
+                    }
+            out[task]["accuracy_level_weighted"] = wpairs
     return out
+
+
+def _weighted_paired_difference(
+    a: Dict[str, Dict[str, float]],
+    b: Dict[str, Dict[str, float]],
+    stratum_of: Dict[str, str],
+    weights: Dict[str, float],
+    n_boot: int,
+) -> BootstrapCI:
+    """Post-stratified paired difference: per-stratum mean of the aligned
+    (same item, same seed) A - B deltas, weighted by the declared pool's stratum
+    proportions; groups resampled within their stratum."""
+    deltas: Dict[str, Dict[str, List[float]]] = {}
+    for g in sorted(set(a) & set(b)):
+        keys = sorted(set(a[g]) & set(b[g]))
+        s = stratum_of.get(g)
+        if not keys or s is None:
+            continue
+        deltas.setdefault(s, {})[g] = [a[g][k] - b[g][k] for k in keys]
+    if not all(s in deltas for s, w in weights.items() if w > 0):
+        # a stratum without paired data cannot be re-weighted honestly
+        return BootstrapCI(None, None, None, n_boot, 0, 0, BOOTSTRAP_SEED_DEFAULT)
+    return weighted_strata_bootstrap(deltas, weights, n_boot=n_boot)
 
 
 def _evidence_meets(e: Dict[str, Any], ew: Dict[str, Any]) -> bool:

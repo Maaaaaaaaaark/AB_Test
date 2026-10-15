@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from ..config import ConfigBundle
 
 PROCESSBENCH_SUBSETS = ["gsm8k", "math", "olympiadbench", "omnimath"]
+MATH_SOLVE_STAGE = "math_solve"
 
 
 def _manifest_paths(out_dir: Path, task: str, stage: str) -> List[Path]:
@@ -20,6 +21,9 @@ def _manifest_paths(out_dir: Path, task: str, stage: str) -> List[Path]:
     elif task == "processbench":
         split = "debug" if stage in ("smoke", "pilot") else stage
         paths.extend(mdir / f"processbench_{s}_{split}.json" for s in PROCESSBENCH_SUBSETS)
+    elif task in ("gsm8k", "math") and stage == MATH_SOLVE_STAGE:
+        # standalone single-model math solving: frozen 200-problem samples
+        paths.append(mdir / f"{task}_math_solve.json")
     elif task in ("gsm8k", "math", "hotpotqa"):
         if stage in ("smoke", "pilot"):
             paths.append(mdir / f"{task}_reference_pilot.json")
@@ -40,6 +44,9 @@ def _select_items(items: List[Dict[str, Any]], stage: str, task: str, cfg: Confi
     matching the build-time partition - except smoke, a tiny engineering
     screen whose flat per-subset cap may cut a group mid-group; its outputs
     never support qualification claims."""
+    if stage == MATH_SOLVE_STAGE:
+        # the manifest IS the frozen sample (sizes applied at build time)
+        return list(items)
     sizes = cfg.splits["stages"][stage]
     if task == "musique_local":
         k = sizes["musique_parents"]
@@ -93,3 +100,16 @@ def manifest_items_for_task(
         with open(p, encoding="utf-8") as f:
             all_items.extend(json.load(f)["items"])
     return _select_items(all_items, plan_name, task, cfg)
+
+
+def manifest_sampling(out_dir: Path, plan_name: str, task: str) -> Dict[str, Any]:
+    """The ``sampling`` block of a task's manifest (math_solve samples record
+    their design, MATH level weights and subject counts there); {} if absent."""
+    try:
+        paths = _manifest_paths(out_dir, task, plan_name)
+    except (FileNotFoundError, KeyError):
+        return {}
+    if len(paths) != 1:
+        return {}
+    with open(paths[0], encoding="utf-8") as f:
+        return dict(json.load(f).get("sampling") or {})
